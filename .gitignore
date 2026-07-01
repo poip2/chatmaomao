@@ -1,0 +1,45 @@
+# Dependencies
+node_modules
+
+# Build output
+build
+dist
+package
+
+# SvelteKit generated
+.svelte-kit
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Vite temp
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea
+*.swp
+*.swo
+*~
+
+# TypeScript
+*.tsbuildinfo
+
+# pnpm
+pnpm-debug.log*
+
+# Tauri (Rust side handled by src-tauri/.gitignore, but gen output may land here)
+src-tauri/gen/schemas
+src-tauri/target
+
+# Optional: uncomment if you don't commit icons
+# src-tauri/icons
