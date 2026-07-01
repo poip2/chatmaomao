@@ -51,13 +51,11 @@ export async function openFileDialog(): Promise<void> {
       ],
     });
 
-    if (selected) {
-      const path =
-        typeof selected === "string"
-          ? selected
-          : ((selected as Record<string, unknown>)?.path ?? String(selected));
-      await openFile(path as string);
+    // @tauri-apps/plugin-dialog v2 open() returns string | null for single file selection
+    if (typeof selected === "string") {
+      await openFile(selected);
     }
+    // If selected is null, user cancelled the dialog - do nothing
   } catch (err) {
     console.error("File dialog error:", err);
   }
