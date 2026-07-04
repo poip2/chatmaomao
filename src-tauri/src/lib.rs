@@ -1,3 +1,4 @@
+mod agent;
 mod commands;
 
 use commands::watcher::WatcherState;
