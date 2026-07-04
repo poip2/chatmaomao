@@ -55,12 +55,12 @@ impl AgentTool for WriteTool {
         let path_str = args
             .get("path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::NotFound("missing 'path' argument".into()))?;
+            .ok_or_else(|| ToolError::InvalidArgs("missing path argument".into()))?;
 
         let content = args
             .get("content")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::NotFound("missing 'content' argument".into()))?;
+            .ok_or_else(|| ToolError::InvalidArgs("missing content argument".into()))?;
 
         let resolved = validate_path(path_str, &self.cwd, &self.protected_paths, false)?;
 

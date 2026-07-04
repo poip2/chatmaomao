@@ -178,9 +178,17 @@ pub enum ToolError {
     #[error("timeout: {0}")]
     Timeout(String),
 
+    /// The command exited with a non-zero exit code.
+    #[error("non-zero exit code {0}: {1}")]
+    NonZeroExit(i32, String),
+
     /// The tool was cancelled via AgentSignal.
     #[error("cancelled")]
     Cancelled,
+
+    /// Invalid or missing arguments in the tool call.
+    #[error("invalid arguments: {0}")]
+    InvalidArgs(String),
 
     /// An I/O error occurred during tool execution.
     #[error("i/o error: {0}")]

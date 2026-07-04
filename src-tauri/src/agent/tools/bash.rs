@@ -364,15 +364,13 @@ impl AgentTool for BashTool {
         let command = args
             .get("command")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::NotFound("missing 'command' argument".into()))?;
+            .ok_or_else(|| ToolError::InvalidArgs("missing 'command' argument".into()))?;
 
         let timeout_ms = args.get("timeout_ms").and_then(|v| v.as_u64());
 
         // ── Shared accumulation state ──
         let output: Arc<std::sync::Mutex<Vec<u8>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
-        let last_emit: Arc<std::sync::Mutex<Instant>> =
-            Arc::new(std::sync::Mutex::new(Instant::now()));
         let was_truncated: Arc<std::sync::Mutex<bool>> =
             Arc::new(std::sync::Mutex::new(false));
         let line_count: Arc<std::sync::Mutex<usize>> =
@@ -381,34 +379,70 @@ impl AgentTool for BashTool {
             Arc::new(std::sync::Mutex::new(stream_callback));
 
         // ── Build output callbacks ──
+        // Each callback gets its own throttle timer so stdout and stderr
+        // don't starve each other.
         let make_cb = |label: &'static str| {
             let output = output.clone();
-            let last_emit = last_emit.clone();
+            let last_emit: Arc<std::sync::Mutex<Instant>> =
+                Arc::new(std::sync::Mutex::new(Instant::now()));
             let was_truncated = was_truncated.clone();
             let line_count = line_count.clone();
             let stream_cb = stream_cb.clone();
             let cb: Arc<dyn OutputHandler> = Arc::new(move |data: &[u8]| {
-                let mut out = output.lock().unwrap();
-                let mut lc = line_count.lock().unwrap();
+                // Compute everything under the locks, then call back outside.
+                let pending: Option<String> = {
+                    let mut out = output.lock().unwrap();
+                    let mut lc = line_count.lock().unwrap();
 
-                *lc += data.iter().filter(|&&b| b == b'\n').count();
-                if out.len() > MAX_OUTPUT_BYTES || *lc > MAX_OUTPUT_LINES {
-                    *was_truncated.lock().unwrap() = true;
-                }
-                out.extend_from_slice(data);
+                    *lc += data.iter().filter(|&&b| b == b'\n').count();
+                    if out.len() > MAX_OUTPUT_BYTES || *lc > MAX_OUTPUT_LINES {
+                        *was_truncated.lock().unwrap() = true;
+                    }
 
-                // ── 100 ms heartbeat throttle ──
-                let now = Instant::now();
-                let mut last = last_emit.lock().unwrap();
-                if now.duration_since(*last) >= Duration::from_millis(THROTTLE_MS) {
-                    *last = now;
-                    if let Some(ref cb) = *stream_cb.lock().unwrap() {
-                        let text = String::from_utf8_lossy(data).to_string();
-                        if !text.is_empty() {
-                            let prefix =
-                                if label == "stderr" { "[stderr] " } else { "" };
-                            cb(format!("{}{}", prefix, text));
+                    // NOTE: We continue accumulating after truncation because
+                    // `full_output` is used both for the truncated LLM content
+                    // AND for the temp file that captures the complete output.
+                    // Stopping accumulation would lose the tail of the output
+                    // in the temp file.  A future improvement: stream directly
+                    // to the temp file during execution and keep only the last
+                    // N lines in memory for the LLM summary.
+                    out.extend_from_slice(data);
+
+                    // F04: Throttle check with per-stream timer.
+                    let now = Instant::now();
+                    let mut last = last_emit.lock().unwrap();
+                    let should_emit =
+                        now.duration_since(*last) >= Duration::from_millis(THROTTLE_MS);
+                    if should_emit {
+                        *last = now;
+                        // F04: Format the message inside the lock, invoke
+                        // callback outside to reduce contention.
+                        let guard = stream_cb.lock().unwrap();
+                        if let Some(ref cb) = *guard {
+                            let text = String::from_utf8_lossy(data).to_string();
+                            if !text.is_empty() {
+                                let prefix = if label == "stderr" {
+                                    "[stderr] "
+                                } else {
+                                    ""
+                                };
+                                Some(format!("{}{}", prefix, text))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
                         }
+                    } else {
+                        None
+                    }
+                }; // All locks dropped here.
+
+                // F04: Invoke the stream callback outside any lock.
+                if let Some(msg) = pending {
+                    let guard = stream_cb.lock().unwrap();
+                    if let Some(ref cb) = *guard {
+                        cb(msg);
                     }
                 }
             });
@@ -437,7 +471,7 @@ impl AgentTool for BashTool {
         };
 
         match exit {
-            ProcessExit::Code(code) if code != 0 => Err(ToolError::SandboxDenied(format!(
+            ProcessExit::Code(code) if code != 0 => Err(ToolError::NonZeroExit(code, format!(
                 "command exited with code {}: {}",
                 code, command
             ))),
@@ -555,10 +589,10 @@ mod tests {
             .execute(json!({"command": "exit 42"}), AgentSignal::new(), None)
             .await;
         match r {
-            Err(ToolError::SandboxDenied(msg)) => {
-                assert!(msg.contains("42"), "{}", msg);
+            Err(ToolError::NonZeroExit(code, msg)) => {
+                assert_eq!(code, 42, "{}", msg);
             }
-            other => panic!("expected SandboxDenied, got {:?}", other),
+            other => panic!("expected NonZeroExit, got {:?}", other),
         }
     }
 
