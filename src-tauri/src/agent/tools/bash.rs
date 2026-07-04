@@ -418,7 +418,7 @@ impl AgentTool for BashTool {
                         // F04: Format the message inside the lock, invoke
                         // callback outside to reduce contention.
                         let guard = stream_cb.lock().unwrap();
-                        if let Some(ref cb) = *guard {
+                        if let Some(_) = *guard {
                             let text = String::from_utf8_lossy(data).to_string();
                             if !text.is_empty() {
                                 let prefix = if label == "stderr" {
