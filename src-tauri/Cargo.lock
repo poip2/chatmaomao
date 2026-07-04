@@ -3416,6 +3416,7 @@ name = "tauri-appmaomaochat"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "libc",
  "notify",
  "serde",
  "serde_json",
@@ -3798,6 +3799,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

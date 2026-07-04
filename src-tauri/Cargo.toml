@@ -14,9 +14,6 @@ edition = "2021"
 name = "tauri_appmaomaochat_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-[dev-dependencies]
-tempfile = "3"
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -29,5 +26,9 @@ serde_json = "1"
 notify = "8"
 thiserror = "2"
 async-trait = "0.1"
-tokio = { version = "1", features = ["sync", "macros", "rt"] }
+tokio = { version = "1", features = ["sync", "macros", "rt", "process", "time"] }
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 

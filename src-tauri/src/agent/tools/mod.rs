@@ -6,6 +6,7 @@
 //!
 //! Shared path validation lives here so all three tools reuse the same logic.
 
+pub mod bash;
 pub mod edit;
 pub mod read;
 pub mod write;
