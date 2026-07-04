@@ -44,7 +44,10 @@ pub fn start_watching(
     state: tauri::State<'_, WatcherState>,
     path: String,
 ) -> Result<(), String> {
-    let mut watchers = state.watchers.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut watchers = state
+        .watchers
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
 
     // Don't re-watch if already watching
     if watchers.contains_key(&path) {
@@ -68,7 +71,10 @@ pub fn start_watching(
 
 #[tauri::command]
 pub fn stop_watching(state: tauri::State<'_, WatcherState>, path: String) -> Result<(), String> {
-    let mut watchers = state.watchers.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut watchers = state
+        .watchers
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     // Removing and dropping the watcher stops watching
     watchers.remove(&path);
     Ok(())

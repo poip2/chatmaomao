@@ -10,7 +10,10 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -424,7 +427,10 @@ mod tests {
         assert_eq!(ctx.messages.len(), 1);
 
         // Hook
-        let hook = Hook { blocked: true, terminate: false };
+        let hook = Hook {
+            blocked: true,
+            terminate: false,
+        };
         assert!(hook.blocked);
         assert!(!hook.terminate);
 
@@ -447,7 +453,9 @@ mod tests {
 
         #[async_trait]
         impl AgentTool for NoopTool {
-            fn name(&self) -> &str { "noop" }
+            fn name(&self) -> &str {
+                "noop"
+            }
 
             async fn execute(
                 &self,
@@ -461,11 +469,15 @@ mod tests {
 
         #[async_trait]
         impl ToolDefinition for NoopTool {
-            fn description(&self) -> &str { "A no-op tool for testing." }
+            fn description(&self) -> &str {
+                "A no-op tool for testing."
+            }
             fn json_schema(&self) -> serde_json::Value {
                 serde_json::json!({"type": "object"})
             }
-            fn prompt_snippet(&self) -> &str { "" }
+            fn prompt_snippet(&self) -> &str {
+                ""
+            }
         }
 
         let def: Arc<dyn ToolDefinition> = Arc::new(NoopTool);
@@ -475,11 +487,7 @@ mod tests {
 
         // Verify the wrapper delegates execute correctly (returns NotImplemented).
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(tool.execute(
-            serde_json::json!({}),
-            AgentSignal::new(),
-            None,
-        ));
+        let result = rt.block_on(tool.execute(serde_json::json!({}), AgentSignal::new(), None));
         assert!(matches!(result, Err(ToolError::NotImplemented)));
     }
 }

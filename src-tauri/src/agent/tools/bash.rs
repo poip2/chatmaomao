@@ -1,4 +1,6 @@
 //! BashTool — executes shell commands and returns their output.
+
+#![allow(dead_code)]
 //!
 //! Architecture:
 //!   `BashTool` (accumulation, throttling, truncation, formatting)
@@ -151,15 +153,14 @@ impl ProcessExecutor for LocalExecutor {
 
         let mut child = tokio::process::Command::from(std_cmd)
             .spawn()
-            .map_err(|e| ToolError::Io(e))?;
+            .map_err(ToolError::Io)?;
 
         let pid = child.id().expect("child must have a PID");
         let child_stdout = child.stdout.take().expect("stdout piped");
         let child_stderr = child.stderr.take().expect("stderr piped");
 
         // ── Channel from reader tasks → main loop ──
-        let (chunk_tx, mut chunk_rx) =
-            tokio::sync::mpsc::unbounded_channel::<PipeChunk>();
+        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<PipeChunk>();
         let reader_done = Arc::new(AtomicBool::new(false));
 
         spawn_pipe_reader(
@@ -369,12 +370,9 @@ impl AgentTool for BashTool {
         let timeout_ms = args.get("timeout_ms").and_then(|v| v.as_u64());
 
         // ── Shared accumulation state ──
-        let output: Arc<std::sync::Mutex<Vec<u8>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
-        let was_truncated: Arc<std::sync::Mutex<bool>> =
-            Arc::new(std::sync::Mutex::new(false));
-        let line_count: Arc<std::sync::Mutex<usize>> =
-            Arc::new(std::sync::Mutex::new(0));
+        let output: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let was_truncated: Arc<std::sync::Mutex<bool>> = Arc::new(std::sync::Mutex::new(false));
+        let line_count: Arc<std::sync::Mutex<usize>> = Arc::new(std::sync::Mutex::new(0));
         let stream_cb: Arc<std::sync::Mutex<Option<StreamCallback>>> =
             Arc::new(std::sync::Mutex::new(stream_callback));
 
@@ -418,14 +416,10 @@ impl AgentTool for BashTool {
                         // F04: Format the message inside the lock, invoke
                         // callback outside to reduce contention.
                         let guard = stream_cb.lock().unwrap();
-                        if let Some(_) = *guard {
+                        if guard.is_some() {
                             let text = String::from_utf8_lossy(data).to_string();
                             if !text.is_empty() {
-                                let prefix = if label == "stderr" {
-                                    "[stderr] "
-                                } else {
-                                    ""
-                                };
+                                let prefix = if label == "stderr" { "[stderr] " } else { "" };
                                 Some(format!("{}{}", prefix, text))
                             } else {
                                 None
@@ -452,13 +446,18 @@ impl AgentTool for BashTool {
         // ── Execute ──
         let exit = self
             .executor
-            .run(command, &self.cwd, timeout_ms, signal, make_cb("stdout"), make_cb("stderr"))
+            .run(
+                command,
+                &self.cwd,
+                timeout_ms,
+                signal,
+                make_cb("stdout"),
+                make_cb("stderr"),
+            )
             .await?;
 
         // ── Format result ──
-        let full_output = {
-            String::from_utf8_lossy(&output.lock().unwrap()).to_string()
-        };
+        let full_output = { String::from_utf8_lossy(&output.lock().unwrap()).to_string() };
         let output_len = full_output.len();
         let truncated = *was_truncated.lock().unwrap();
 
@@ -471,12 +470,13 @@ impl AgentTool for BashTool {
         };
 
         match exit {
-            ProcessExit::Code(code) if code != 0 => Err(ToolError::NonZeroExit(code, format!(
-                "command exited with code {}: {}",
-                code, command
-            ))),
+            ProcessExit::Code(code) if code != 0 => Err(ToolError::NonZeroExit(
+                code,
+                format!("command exited with code {}: {}", code, command),
+            )),
             ProcessExit::KilledByTimeout => Err(ToolError::Timeout(format!(
-                "command timed out: {}", command
+                "command timed out: {}",
+                command
             ))),
             ProcessExit::KilledByCancel => Err(ToolError::Cancelled),
             ProcessExit::Code(_) => Ok(AgentToolResult {
@@ -533,9 +533,8 @@ fn truncate_output(full: &str) -> String {
 }
 
 fn write_full_to_temp(full: &str) -> Result<String, ToolError> {
-    let mut tmp = tempfile::NamedTempFile::new().map_err(|e| ToolError::Io(e))?;
-    std::io::Write::write_all(&mut tmp, full.as_bytes())
-        .map_err(|e| ToolError::Io(e))?;
+    let mut tmp = tempfile::NamedTempFile::new().map_err(ToolError::Io)?;
+    std::io::Write::write_all(&mut tmp, full.as_bytes()).map_err(ToolError::Io)?;
     let path = tmp.into_temp_path();
     let s = path.to_string_lossy().to_string();
     path.keep().map_err(|e| ToolError::Io(e.into()))?;
@@ -572,7 +571,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tool = make_tool(&dir);
         let r = tool
-            .execute(json!({"command": "echo hello world"}), AgentSignal::new(), None)
+            .execute(
+                json!({"command": "echo hello world"}),
+                AgentSignal::new(),
+                None,
+            )
             .await
             .unwrap();
         assert!(r.content.contains("hello world"));
@@ -787,6 +790,10 @@ mod tests {
             .unwrap();
 
         let calls = hits.lock().unwrap();
-        assert!(calls.len() >= 2, "stream callback called {} times", calls.len());
+        assert!(
+            calls.len() >= 2,
+            "stream callback called {} times",
+            calls.len()
+        );
     }
 }

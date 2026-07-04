@@ -1,4 +1,6 @@
 //! ReadTool — reads file contents and returns them to the LLM.
+
+#![allow(dead_code)]
 //!
 //! Parameters (JSON):
 //!   `path` (string, required) — file path relative to the workspace root.
@@ -167,11 +169,7 @@ mod tests {
         let tool = ReadTool::new(&ctx);
 
         let result = tool
-            .execute(
-                json!({"path": ".git/config"}),
-                AgentSignal::new(),
-                None,
-            )
+            .execute(json!({"path": ".git/config"}), AgentSignal::new(), None)
             .await;
 
         assert!(matches!(result, Err(ToolError::SandboxDenied(_))));

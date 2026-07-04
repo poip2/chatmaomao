@@ -1,4 +1,6 @@
 //! EditTool — performs exact string replacement in a file.
+
+#![allow(dead_code)]
 //!
 //! Parameters (JSON):
 //!   `path` (string, required)       — file path relative to the workspace root.
@@ -90,7 +92,7 @@ impl AgentTool for EditTool {
             ))),
             1 => {
                 let new_content = content.replacen(old_string, new_string, 1);
-                std::fs::write(&resolved, &new_content).map_err(|e| ToolError::Io(e))?;
+                std::fs::write(&resolved, &new_content).map_err(ToolError::Io)?;
 
                 Ok(AgentToolResult {
                     content: format!(

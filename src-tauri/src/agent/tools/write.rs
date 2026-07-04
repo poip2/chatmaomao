@@ -1,4 +1,6 @@
 //! WriteTool — writes content to a file.
+
+#![allow(dead_code)]
 //!
 //! Parameters (JSON):
 //!   `path` (string, required)    — file path relative to the workspace root.
@@ -66,10 +68,10 @@ impl AgentTool for WriteTool {
 
         // Create parent directories if needed
         if let Some(parent) = resolved.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| ToolError::Io(e))?;
+            std::fs::create_dir_all(parent).map_err(ToolError::Io)?;
         }
 
-        std::fs::write(&resolved, content).map_err(|e| ToolError::Io(e))?;
+        std::fs::write(&resolved, content).map_err(ToolError::Io)?;
 
         let size_bytes = content.len();
 

@@ -6,6 +6,8 @@
 //!
 //! Shared path validation lives here so all three tools reuse the same logic.
 
+#![allow(dead_code)]
+
 pub mod bash;
 pub mod edit;
 pub mod read;
@@ -56,18 +58,15 @@ fn canonicalize_best_effort(path: &Path, raw: &str) -> Result<PathBuf, ToolError
         let component = existing
             .file_name()
             .map(|c| c.to_os_string())
-            .ok_or_else(|| {
-                ToolError::SandboxDenied(format!(
-                    "cannot resolve path: {}", raw
-                ))
-            })?;
+            .ok_or_else(|| ToolError::SandboxDenied(format!("cannot resolve path: {}", raw)))?;
         suffix.push(component);
 
         if !existing.pop() {
             // We hit the root and still nothing canonicalized — the cwd itself
             // may not exist, which is a configuration error.
             return Err(ToolError::SandboxDenied(format!(
-                "no canonicalizable ancestor found for: {}", raw
+                "no canonicalizable ancestor found for: {}",
+                raw
             )));
         }
     }
@@ -141,8 +140,7 @@ pub fn validate_path(
     protected_paths: &[PathBuf],
     must_exist: bool,
 ) -> Result<PathBuf, ToolError> {
-    let cwd_canon = std::fs::canonicalize(cwd)
-        .map_err(|e| ToolError::Io(e))?;
+    let cwd_canon = std::fs::canonicalize(cwd).map_err(ToolError::Io)?;
 
     // Resolve raw → absolute path
     let joined = if Path::new(raw).is_absolute() {
@@ -154,10 +152,9 @@ pub fn validate_path(
     // Canonicalize (resolves `..`, symlinks, etc.)
     let canon = if must_exist {
         // File must exist — canonicalize directly.
-        std::fs::canonicalize(&joined)
-            .map_err(|e| ToolError::NotFound(format!(
-                "path not found or inaccessible: {} ({})", raw, e
-            )))?
+        std::fs::canonicalize(&joined).map_err(|e| {
+            ToolError::NotFound(format!("path not found or inaccessible: {} ({})", raw, e))
+        })?
     } else {
         // File may not exist (write tool). Walk up from the target until we
         // find a canonicalizable ancestor, then rebuild the suffix from it.
@@ -184,8 +181,7 @@ pub fn validate_path(
         // form (catches attempts to create files under not-yet-existing
         // protected directories, e.g. writing .git/config when .git/ does not
         // yet exist).
-        let prot_check = std::fs::canonicalize(&prot_resolved)
-            .unwrap_or(prot_resolved);
+        let prot_check = std::fs::canonicalize(&prot_resolved).unwrap_or(prot_resolved);
         if canon.starts_with(&prot_check) {
             return Err(ToolError::SandboxDenied(format!(
                 "path is protected: '{}' (blocked by protected path '{}')",
@@ -224,10 +220,7 @@ mod tests {
             let _ = std::os::unix::fs::symlink("/etc/passwd", ws.join("escape_link"));
         }
 
-        let protected = vec![
-            PathBuf::from(".git"),
-            PathBuf::from(".agents"),
-        ];
+        let protected = vec![PathBuf::from(".git"), PathBuf::from(".agents")];
 
         (dir, protected)
     }
@@ -349,10 +342,7 @@ mod tests {
         // normalize_path is always called on paths built from an absolute
         // canonical base, and if `..` pops past the cwd the downstream
         // `starts_with(cwd_canon)` containment check will catch it.
-        assert_eq!(
-            normalize_path(Path::new("/x/../../y")),
-            PathBuf::from("y")
-        );
+        assert_eq!(normalize_path(Path::new("/x/../../y")), PathBuf::from("y"));
     }
 
     #[cfg(unix)]
