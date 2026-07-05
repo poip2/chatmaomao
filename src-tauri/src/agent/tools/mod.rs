@@ -58,13 +58,13 @@ fn canonicalize_best_effort(path: &Path, raw: &str) -> Result<PathBuf, ToolError
         let component = existing
             .file_name()
             .map(|c| c.to_os_string())
-            .ok_or_else(|| ToolError::SandboxDenied(format!("cannot resolve path: {}", raw)))?;
+            .ok_or_else(|| ToolError::NotFound(format!("cannot resolve path: {}", raw)))?;
         suffix.push(component);
 
         if !existing.pop() {
             // We hit the root and still nothing canonicalized — the cwd itself
             // may not exist, which is a configuration error.
-            return Err(ToolError::SandboxDenied(format!(
+            return Err(ToolError::NotFound(format!(
                 "no canonicalizable ancestor found for: {}",
                 raw
             )));
@@ -309,9 +309,9 @@ mod tests {
 
         let result = validate_path("newdir/../../etc/evil.txt", ws, &protected, false);
         match result {
-            Err(ToolError::SandboxDenied(_)) => {} // expected
+            Err(ToolError::NotFound(_)) => {} // expected
             Ok(p) => panic!("unexpectedly allowed escape: {:?}", p),
-            other => panic!("expected SandboxDenied, got {:?}", other),
+            other => panic!("expected NotFound, got {:?}", other),
         }
     }
 

@@ -191,7 +191,7 @@ pub fn apply_sandbox_post_spawn(
 /// the drop guard is always run on the owning thread.
 pub struct JobHandle {
     pid: u32,
-    h_job: HANDLE,
+    h_job: Option<HANDLE>,
 }
 
 // SAFETY: HANDLE is a kernel handle index (not a raw pointer to memory).
@@ -203,12 +203,13 @@ unsafe impl Send for JobHandle {}
 impl Drop for JobHandle {
     fn drop(&mut self) {
         unsafe {
-            // CloseHandle on the Job Object first — this is the primary
-            // cleanup mechanism.  JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE ensures
-            // all processes in the job are terminated.
-            let _ = CloseHandle(self.h_job);
+            // Close the Job Object handle if we have one.  KILL_ON_JOB_CLOSE
+            // ensures all processes in the job are terminated.
+            if let Some(h) = self.h_job {
+                let _ = CloseHandle(h);
+            }
 
-            // Safety net: if the process somehow survived the job kill,
+            // Safety net: if the process survived (e.g. job was unavailable),
             // terminate it directly.
             let h = OpenProcess(
                 PROCESS_SET_INFORMATION | windows::Win32::System::Threading::PROCESS_TERMINATE,
@@ -225,7 +226,7 @@ impl Drop for JobHandle {
 
 // ─── Job Object ──────────────────────────────────────────────────────────────────
 
-fn apply_job_object(pid: u32) -> Result<HANDLE, ToolError> {
+fn apply_job_object(pid: u32) -> Result<Option<HANDLE>, ToolError> {
     unsafe {
         let h_job = CreateJobObjectW(None, PCWSTR::null())
             .map_err(|e| ToolError::SandboxDenied(format!("CreateJobObjectW failed: {:?}", e)))?;
@@ -234,37 +235,46 @@ fn apply_job_object(pid: u32) -> Result<HANDLE, ToolError> {
         limits.BasicLimitInformation.ActiveProcessLimit = 0;
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         limits.JobMemoryLimit = 0;
-
         let size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>();
-        SetInformationJobObject(
+
+        if let Err(e) = SetInformationJobObject(
             h_job,
             JobObjectExtendedLimitInformation,
             &limits as *const _ as *const std::ffi::c_void,
             size as u32,
-        )
-        .map_err(|e| {
+        ) {
             let _ = CloseHandle(h_job);
-            ToolError::SandboxDenied(format!("SetInformationJobObject failed: {:?}", e))
-        })?;
+            return Err(ToolError::SandboxDenied(format!("SetInformationJobObject failed: {:?}", e)));
+        }
 
-        let h_process = OpenProcess(
-            PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION,
-            FALSE,
-            pid,
-        )
-        .map_err(|e| {
-            let _ = CloseHandle(h_job);
-            ToolError::SandboxDenied(format!("OpenProcess({}) failed: {:?}", pid, e))
-        })?;
+        let h_process = match OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION, FALSE, pid) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = CloseHandle(h_job);
+                return Err(ToolError::SandboxDenied(format!("OpenProcess({}) failed: {:?}", pid, e)));
+            }
+        };
 
-        AssignProcessToJobObject(h_job, h_process).map_err(|e| {
-            let _ = CloseHandle(h_job);
+        // AssignProcessToJobObject failure is not fatal — the process may
+        // already be in an outer job (e.g., GitHub Actions runner) that
+        // disallows nesting/breakaway.  Degrade gracefully to Low IL + ACL
+        // isolation only, without resource limits or kill-on-close.
+        if let Err(e) = AssignProcessToJobObject(h_job, h_process) {
             let _ = CloseHandle(h_process);
-            ToolError::SandboxDenied(format!("AssignProcessToJobObject({}) failed: {:?}", pid, e))
-        })?;
+            let _ = CloseHandle(h_job);
+            eprintln!(
+                "WARNING: AssignProcessToJobObject({}) failed: {:?} — \
+                 process may already be in an outer Job Object that disallows \
+                 nesting/breakaway (e.g., CI runner).  Sandbox degraded to \
+                 Low Integrity Level + ACL isolation only; resource limits and \
+                 kill-on-close are unavailable.",
+                pid, e
+            );
+            return Ok(None);
+        }
 
         let _ = CloseHandle(h_process);
-        Ok(h_job)
+        Ok(Some(h_job))
     }
 }
 
