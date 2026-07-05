@@ -174,6 +174,16 @@ pub fn apply_sandbox_post_spawn(
     cwd: &Path,
     policy: &SandboxPolicy,
 ) -> Result<JobHandle, ToolError> {
+    apply_sandbox_post_spawn_inner(pid, cwd, policy, None)
+}
+
+/// Internal variant with profile_dir override for tests.
+pub(crate) fn apply_sandbox_post_spawn_inner(
+    pid: u32,
+    cwd: &Path,
+    policy: &SandboxPolicy,
+    profile_dir: Option<&Path>,
+) -> Result<JobHandle, ToolError> {
     let h_job = apply_job_object(pid)?;
 
     let mut acl_restores: Vec<(PathBuf, Vec<u8>)> = Vec::new();
@@ -181,11 +191,7 @@ pub fn apply_sandbox_post_spawn(
         policy.mode,
         SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite
     ) {
-        // Read isolation: deny-read %USERPROFILE%, allow-read writable_roots + cwd,
-        // and deny-read protected_paths via kernel ACL.
-        // Saves original DACLs so they can be restored when the guard drops.
-        acl_restores = apply_read_isolation(pid, cwd, policy)?;
-        // Best-effort: downgrade to Low integrity.
+        acl_restores = apply_read_isolation(pid, cwd, policy, profile_dir)?;
         let _ = apply_low_integrity(pid);
     }
 
@@ -448,36 +454,39 @@ unsafe fn restore_acl_guard(restores: &mut Vec<(PathBuf, Vec<u8>)>) {
     }
 }
 
-/// Apply deny-read on %USERPROFILE% and allow-read on writable_roots / cwd.
+/// Apply deny-read on profile directory and allow-read on writable_roots/cwd.
 ///
-/// Best-effort: failures are logged but never fail the sandbox setup.
+/// `profile_dir` overrides %USERPROFILE% — tests pass a fake path to avoid
+/// modifying the real user's ACLs.  Production passes `None`.
 ///
-/// Returns a list of (path, original_DACL_bytes) for every path whose DACL
-/// was modified.  The caller must restore these DACLs when the sandbox is
-/// torn down to avoid permanently changing filesystem ACLs (which breaks
-/// subsequent tests that run in the same process under %USERPROFILE%).
+/// Returns a list of (path, original_DACL_bytes) for restoring on teardown.
 fn apply_read_isolation(
     pid: u32,
     cwd: &Path,
     policy: &SandboxPolicy,
+    profile_dir: Option<&Path>,
 ) -> Result<Vec<(PathBuf, Vec<u8>)>, ToolError> {
     let mut restores: Vec<(PathBuf, Vec<u8>)> = Vec::new();
 
     // 1. Get the child token's user SID.
     let sid = match get_child_token_user_sid(pid) {
         Ok(s) => s,
-        Err(_) => return Ok(restores), // best-effort
+        Err(_) => return Ok(restores),
     };
 
-    // 2. Deny-read on %USERPROFILE%.
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        let profile_path = PathBuf::from(&profile);
-        if profile_path.exists() {
-            if let Ok(orig) = save_dacl(&profile_path) {
-                restores.push((profile_path.clone(), orig));
-            }
-            let _ = add_deny_read_ace(&profile_path, &sid);
+    // 2. Deny-read on profile directory.
+    let profile_path = match profile_dir {
+        Some(p) => p.to_path_buf(),
+        None => match std::env::var("USERPROFILE") {
+            Ok(p) => PathBuf::from(&p),
+            Err(_) => return Ok(restores),
+        },
+    };
+    if profile_path.exists() {
+        if let Ok(orig) = save_dacl(&profile_path) {
+            restores.push((profile_path.clone(), orig));
         }
+        let _ = add_deny_read_ace(&profile_path, &sid);
     }
 
     // 3. Collect paths that need explicit allow-read.
@@ -1117,8 +1126,13 @@ mod tests {
         let child = cmd.spawn().map_err(|e| ToolError::Io(e))?;
         let pid = child.id();
 
-        // Apply sandboxing (deny-read ACEs, etc.)
-        let _guard = apply_sandbox_post_spawn(pid, cwd, policy)?;
+        // Apply sandboxing (deny-read ACEs, etc.).
+        // Use a fake profile directory so tests never touch the real
+        // %USERPROFILE% ACLs.
+        let fake_profile = tempfile::tempdir().map_err(|e| ToolError::Io(e))?;
+        let _guard = apply_sandbox_post_spawn_inner(
+            pid, cwd, policy, Some(fake_profile.path()),
+        )?;
 
         let output = child.wait_with_output().map_err(|e| ToolError::Io(e))?;
         on_stdout.handle(&output.stdout);
