@@ -163,7 +163,7 @@ pub fn validate_path(
 
     // ── Check 1: containment ──
     if !canon.starts_with(&cwd_canon) {
-        return Err(ToolError::SandboxDenied(format!(
+        return Err(ToolError::NotFound(format!(
             "path escapes workspace boundary: '{}' resolves outside cwd",
             raw
         )));
@@ -250,11 +250,7 @@ mod tests {
 
         // Attempt to escape using ../
         let result = validate_path("../../etc/passwd", ws, &protected, true);
-        assert!(result.is_err());
-        match result {
-            Err(ToolError::SandboxDenied(_)) => {} // expected
-            other => panic!("expected SandboxDenied, got {:?}", other),
-        }
+        assert!(matches!(result, Err(ToolError::NotFound(_))));
     }
 
     #[test]
@@ -354,6 +350,6 @@ mod tests {
         // The symlink points to /etc/passwd, canonicalize resolves it.
         // containment check should catch this.
         let result = validate_path("escape_link", ws, &protected, true);
-        assert!(matches!(result, Err(ToolError::SandboxDenied(_))));
+        assert!(matches!(result, Err(ToolError::NotFound(_))));
     }
 }

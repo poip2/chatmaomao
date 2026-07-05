@@ -136,8 +136,8 @@ mod tests {
 
         assert_eq!(result.content, "hello world\n");
         assert_eq!(
-            result.details["path"].as_str().unwrap(),
-            dir.path().join("hello.txt").to_string_lossy()
+            std::fs::canonicalize(result.details["path"].as_str().unwrap()).unwrap_or_else(|_| PathBuf::from(result.details["path"].as_str().unwrap())),
+            std::fs::canonicalize(dir.path().join("hello.txt")).unwrap(),
         );
         assert_eq!(result.details["size_bytes"], 12);
     }
@@ -156,7 +156,7 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(result, Err(ToolError::SandboxDenied(_))));
+        assert!(matches!(result, Err(ToolError::NotFound(_))));
     }
 
     #[tokio::test]
