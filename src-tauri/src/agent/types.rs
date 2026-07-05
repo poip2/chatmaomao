@@ -39,6 +39,8 @@ pub enum NetworkPolicy {
     /// No network access at all.
     Isolated,
     /// Only allowed to connect through a local forwarding proxy.
+    /// **macOS only**: on Linux and Windows this policy is rejected with an error
+    /// rather than silently degrading to FullAccess.
     ProxyOnly,
     /// Full unfiltered network access.
     FullAccess,
@@ -46,8 +48,8 @@ pub enum NetworkPolicy {
 
 /// Sandbox policy governing what a tool (bash/python) may access.
 ///
-/// Applied per-tool-execution. The sandbox implementation (seatbelt/bwrap/landlock)
-/// is NOT in this file — this is the policy data structure only.
+/// Applied per-tool-execution. The sandbox implementation (seatbelt/bwrap/landlock/
+/// Job Object) is NOT in this file — this is the policy data structure only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxPolicy {
     /// Execution mode: read-only, workspace-write, or unrestricted.

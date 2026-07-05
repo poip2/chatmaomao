@@ -294,6 +294,6 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(result, Err(ToolError::SandboxDenied(_))));
+        assert!(matches!(result, Err(ToolError::NotFound(_))));
     }
 }

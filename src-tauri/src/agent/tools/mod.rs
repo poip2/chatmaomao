@@ -58,13 +58,13 @@ fn canonicalize_best_effort(path: &Path, raw: &str) -> Result<PathBuf, ToolError
         let component = existing
             .file_name()
             .map(|c| c.to_os_string())
-            .ok_or_else(|| ToolError::SandboxDenied(format!("cannot resolve path: {}", raw)))?;
+            .ok_or_else(|| ToolError::NotFound(format!("cannot resolve path: {}", raw)))?;
         suffix.push(component);
 
         if !existing.pop() {
             // We hit the root and still nothing canonicalized — the cwd itself
             // may not exist, which is a configuration error.
-            return Err(ToolError::SandboxDenied(format!(
+            return Err(ToolError::NotFound(format!(
                 "no canonicalizable ancestor found for: {}",
                 raw
             )));
@@ -122,6 +122,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// 1. **Containment** — the resolved path MUST be a descendant of `cwd`.
 ///    `canonicalize()` resolves all `..` and symlinks, so path-traversal
 ///    payloads like `../../etc/passwd` are caught here.
+///    Violations return `ToolError::NotFound`.
 ///
 /// 2. **Protected paths** — the resolved path MUST NOT start with any
 ///    `protected_paths` prefix (e.g. `.git`, `.agents`). Protected paths are
@@ -129,6 +130,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 ///    its joined (non-canonical) form is used for the prefix check, so that
 ///    creating a file inside a not-yet-existing protected directory is also
 ///    blocked.
+///    Violations return `ToolError::SandboxDenied`.
 ///
 /// `must_exist`: if `true`, the path is canonicalized directly (file must
 /// exist — used by read and edit). If `false`, canonicalization is attempted
@@ -163,7 +165,7 @@ pub fn validate_path(
 
     // ── Check 1: containment ──
     if !canon.starts_with(&cwd_canon) {
-        return Err(ToolError::SandboxDenied(format!(
+        return Err(ToolError::NotFound(format!(
             "path escapes workspace boundary: '{}' resolves outside cwd",
             raw
         )));
@@ -250,11 +252,7 @@ mod tests {
 
         // Attempt to escape using ../
         let result = validate_path("../../etc/passwd", ws, &protected, true);
-        assert!(result.is_err());
-        match result {
-            Err(ToolError::SandboxDenied(_)) => {} // expected
-            other => panic!("expected SandboxDenied, got {:?}", other),
-        }
+        assert!(matches!(result, Err(ToolError::NotFound(_))));
     }
 
     #[test]
@@ -313,9 +311,9 @@ mod tests {
 
         let result = validate_path("newdir/../../etc/evil.txt", ws, &protected, false);
         match result {
-            Err(ToolError::SandboxDenied(_)) => {} // expected
+            Err(ToolError::NotFound(_)) => {} // expected
             Ok(p) => panic!("unexpectedly allowed escape: {:?}", p),
-            other => panic!("expected SandboxDenied, got {:?}", other),
+            other => panic!("expected NotFound, got {:?}", other),
         }
     }
 
@@ -354,6 +352,6 @@ mod tests {
         // The symlink points to /etc/passwd, canonicalize resolves it.
         // containment check should catch this.
         let result = validate_path("escape_link", ws, &protected, true);
-        assert!(matches!(result, Err(ToolError::SandboxDenied(_))));
+        assert!(matches!(result, Err(ToolError::NotFound(_))));
     }
 }

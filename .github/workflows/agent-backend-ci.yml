@@ -1,0 +1,82 @@
+# 放到仓库的 .github/workflows/agent-backend-ci.yml
+#
+# 覆盖 ubuntu-latest / windows-latest / macos-latest 三个平台，
+# 分别对应 Linux(bwrap+landlock) / Windows(win32job+restricted token) / macOS(seatbelt)
+# 三条沙箱代码路径。注意：ubuntu-latest 是原生 Linux，比 WSL 更能代表真实 Linux 行为，
+# 且能顺带覆盖 Windows/macOS 原生代码路径的编译+基础功能测试（不是完整红队测试）。
+
+name: Agent Backend CI
+
+on:
+  push:
+    branches: [master, "feat/**"]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false # 一个平台失败不要连带取消其它平台，三边结果都要看到
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # ── Linux 专属：装 Tauri 系统依赖 + bwrap ──────────────────────
+      - name: Install Linux system deps (Tauri + bubblewrap)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            bubblewrap
+
+      # ── 已知坑：新版 Ubuntu 的 AppArmor 默认会限制非特权 user
+      #    namespace 创建，bwrap 依赖这个特性，不解开的话会跑不起来。
+      #    这是 OpenAI Codex 官方沙箱文档里明确写的已知问题，GitHub
+      #    Actions 的 ubuntu-latest 也可能踩到，提前解开，别等测试
+      #    莫名其妙失败了再来查。
+      - name: Work around Ubuntu AppArmor unprivileged userns restriction
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Verify bwrap actually works (not just installed)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          bwrap --version
+          bwrap --ro-bind / / --unshare-user --unshare-pid echo "bwrap smoke test ok"
+
+      # ── 构建 ────────────────────────────────────────────────────
+      - name: Build
+        working-directory: src-tauri
+        run: cargo build --verbose
+
+      # ── 测试：进程相关的测试（超时/取消/进程树）串行跑，避免并发
+      #    spawn 子进程互相干扰导致偶发失败 ──────────────────────────
+      - name: Run full test suite (serial, avoids process-spawn flakiness)
+        working-directory: src-tauri
+        run: cargo test --verbose -- --test-threads=1
+
+      # ── 单独把 sandbox 模块的测试跑一遍并打印输出，方便在 CI 日志
+      #    里一眼确认对应平台的沙箱代码路径真的被执行到了，不是被
+      #    #[cfg(...)] 悄悄跳过 ──────────────────────────────────────
+      - name: Run sandbox tests with visible output
+        working-directory: src-tauri
+        run: cargo test agent::sandbox -- --nocapture --test-threads=1
