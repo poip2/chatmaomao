@@ -2,13 +2,27 @@
 //!
 //! # Architecture
 //!
+//! Windows sandboxing uses a **two-phase** design:
+//!  1. `build_sandboxed_command` — prepares a bare `cmd /c` Command.
+//!  2. `apply_sandbox_post_spawn` — after the child is spawned, applies
+//!     Job Object, Low-IL token, and ACL read isolation using the child's PID.
+//!
+//! This is unlike macOS/Linux where the sandbox wrapper is configured
+//! before spawn — on Windows, Job Object assignment and token downgrade
+//! require an existing process handle.
+//!
 //! | Layer            | Mechanism                            | What it limits                |
 //! |------------------|--------------------------------------|-------------------------------|
-//! | Resource limits  | Job Object                           | memory, CPU, process count    |
+//! | Resource limits  | Job Object (best-effort)             | memory, CPU, process count    |
 //! | Privilege        | Low-integrity restricted token       | filesystem writes, registry   |
 //! |                  |                                      | writes, IPC to higher-IL      |
 //! | Read isolation   | ACL deny-read on %USERPROFILE%       | reading sensitive user files  |
 //! |                  | + explicit allow-read on workspace   |                               |
+//!
+//! **Graceful degradation**: if `AssignProcessToJobObject` fails (e.g. the
+//! process is already in an outer Job Object like a CI runner), the sandbox
+//! degrades to Low IL + ACL read isolation only — resource limits and
+//! kill-on-close are unavailable, but the process remains sandboxed.
 //!
 //! # Read isolation design
 //!

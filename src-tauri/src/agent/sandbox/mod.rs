@@ -4,16 +4,35 @@
 //! SandboxExecutor (ProcessExecutor impl)
 //!       │
 //!       ▼
-//!   run_sandboxed(cmd, cwd, policy)
+//!   SandboxExecutor::run()
 //!       │
 //!       ├── #[cfg(target_os = "macos")]  → seatbelt::build_sandboxed_command
+//!       │                                     │  (returns (Command, SeatbeltGuard))
+//!       │                                     ▼
+//!       │                                   spawn → done
+//!       │
 //!       ├── #[cfg(target_os = "linux")]  → linux::build_sandboxed_command
+//!       │                                     │  (bwrap or landlock pre_exec)
+//!       │                                     ▼
+//!       │                                   spawn → done
+//!       │
 //!       └── #[cfg(target_os = "windows")]→ windows::build_sandboxed_command
+//!                                             │  (returns bare Command)
+//!                                             ▼
+//!                                           spawn  →  windows::apply_sandbox_post_spawn
+//!                                                       │  (Job Object, Low-IL token,
+//!                                                       │   ACL read isolation)
+//!                                                       ▼
+//!                                                     done
 //! ```
 //!
-//! Each platform module returns a `std::process::Command` that,
-//! when spawned, runs the shell command inside the platform sandbox
-//! (seatbelt, bwrap/landlock, or Job Object + restricted token).
+//! On macOS and Linux the sandbox is fully configured before spawn — the
+//! returned `Command` already wraps the child in seatbelt / bwrap / landlock.
+//! On Windows the sandbox is applied **after** spawn because Job Object
+//! assignment and token downgrade require an existing process handle.
+//! Job Object assignment is best-effort: if the process is already in an
+//! outer Job Object (e.g. CI runner), it degrades gracefully to Low IL +
+//! ACL read isolation only, without resource limits.
 //!
 //! `SandboxExecutor::run()` handles the lifecycle — pipe reading,
 //! timeout, cancel, process-tree kill — identically to `LocalExecutor`.
