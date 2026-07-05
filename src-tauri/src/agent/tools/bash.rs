@@ -9,8 +9,8 @@
 //!   `ProcessExecutor` trait  ←── pluggable backend
 //!       │
 //!       ▼
-//!   `LocalExecutor` (direct spawn, no sandbox — this step)
-//!       │  (step 4: SandboxExecutor wraps seatbelt/bwrap/Job Object here)
+//!   `LocalExecutor` (direct spawn, no sandbox — for development)
+//!   `SandboxExecutor` (seatbelt/bwrap/Job Object — production)
 //!
 //! Parameters (JSON):
 //!   `command`  (string, required) — shell command to run.
@@ -80,10 +80,10 @@ impl<F: Fn(&[u8]) + Send + Sync + 'static> OutputHandler for F {
 /// - Kill the entire process tree on timeout/cancel.
 /// - Wait for the **process** to exit, not for streams to close.
 ///
-/// **Step 4 sandbox integration**: write a `SandboxExecutor` that wraps the child
-/// in seatbelt (macOS) / bwrap+landlock (Linux) / Job Object+Low-IL token (Windows),
-/// implementing this same trait.
-/// `BashTool` only depends on `ProcessExecutor`, so no BashTool changes needed.
+/// `SandboxExecutor` (see `agent/sandbox/`) wraps the child in seatbelt
+/// (macOS) / bwrap+landlock (Linux) / Job Object+Low-IL token (Windows),
+/// implementing this same trait. `BashTool` only depends on
+/// `ProcessExecutor`, so no BashTool changes were needed for sandbox integration.
 #[async_trait]
 pub trait ProcessExecutor: Send + Sync {
     /// Run a shell command, calling `on_stdout` / `on_stderr` for each output chunk.
