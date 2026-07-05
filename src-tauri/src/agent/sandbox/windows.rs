@@ -166,8 +166,9 @@ pub fn apply_sandbox_post_spawn(
         policy.mode,
         SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite
     ) {
-        // Read isolation: deny-read %USERPROFILE%, allow-read writable_roots + cwd.
-        let _ = apply_read_isolation(pid, cwd, policy);
+        // Read isolation: deny-read %USERPROFILE%, allow-read writable_roots + cwd,
+        // and deny-read protected_paths via kernel ACL.
+        apply_read_isolation(pid, cwd, policy)?;
         // Best-effort: downgrade to Low integrity.
         let _ = apply_low_integrity(pid);
     }
@@ -365,6 +366,20 @@ fn apply_read_isolation(pid: u32, cwd: &Path, policy: &SandboxPolicy) -> Result<
     for path in &allow_paths {
         if path.exists() {
             let _ = add_allow_read_ace(path, &sid);
+        }
+    }
+
+    // 4. Deny-read on protected_paths.  Each protected_path gets an
+    //    explicit deny-read ACE with CI|OI so that even bash commands
+    //    (which bypass tool-layer validate_path) cannot read them.
+    for prot in &policy.protected_paths {
+        let resolved = if prot.is_absolute() {
+            prot.clone()
+        } else {
+            cwd.join(prot)
+        };
+        if resolved.exists() {
+            let _ = add_deny_read_ace(&resolved, &sid);
         }
     }
 

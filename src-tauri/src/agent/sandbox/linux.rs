@@ -286,12 +286,23 @@ fn apply_landlock_rules(
         .create()
         .map_err(|e| std::io::Error::other(format!("landlock create: {}", e)))?;
 
-    // ── Allow read+execute on / so shell and system binaries work ──
-    let root_fd =
-        PathFd::new("/").map_err(|e| std::io::Error::other(format!("landlock open /: {}", e)))?;
-    created = created
-        .add_rule(PathBeneath::new(root_fd, read_access | AccessFs::Execute))
-        .map_err(|e| std::io::Error::other(format!("landlock add_rule /: {}", e)))?;
+    // ── Allow read+execute on essential system directories ──
+    // Same list as bwrap's --ro-bind, so the landlock fallback provides
+    // equivalent read isolation rather than granting / globally.
+    for sys_dir in &["/usr", "/bin", "/lib", "/lib64"] {
+        if Path::new(sys_dir).exists() {
+            if let Ok(fd) = PathFd::new(sys_dir) {
+                created = created
+                    .add_rule(PathBeneath::new(fd, read_access | AccessFs::Execute))
+                    .map_err(|e| {
+                        std::io::Error::other(format!(
+                            "landlock add_rule {}: {}",
+                            sys_dir, e
+                        ))
+                    })?;
+            }
+        }
+    }
 
     // ── Allow reads on cwd ──
     if let Ok(cwd_fd) = PathFd::new(cwd) {
