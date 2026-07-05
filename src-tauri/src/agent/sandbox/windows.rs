@@ -61,11 +61,13 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, LocalFree, FALSE, HLOCAL};
 use windows::Win32::Security::{
     AddAccessAllowedAceEx, AddAccessDeniedAceEx, GetAce, GetLengthSid,
-    GetTokenInformation, InitializeAcl, SetTokenInformation, TokenIntegrityLevel,
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation,
+    InitializeAcl, SetTokenInformation, TokenIntegrityLevel,
     WinLowLabelSid, CreateWellKnownSid, PSID, ACL, ACL_REVISION, ACE_HEADER,
     ACE_FLAGS, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
     OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    TOKEN_ADJUST_DEFAULT, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenUser,
+    SID_IDENTIFIER_AUTHORITY, TOKEN_ADJUST_DEFAULT, TOKEN_MANDATORY_LABEL,
+    TOKEN_QUERY, TokenUser,
 };
 use windows::Win32::Security::Authorization::{
     GetNamedSecurityInfoW, SetNamedSecurityInfoW, SE_FILE_OBJECT,
@@ -91,6 +93,10 @@ const JOB_ACTIVE_PROCESS_LIMIT: u32 = 64;
 /// Byte offset of the SID within an ACCESS_DENIED_ACE / ACCESS_ALLOWED_ACE.
 /// Layout: AceHeader(4 bytes) + AccessMask(4 bytes) = 8, then SID.
 const ACE_SID_OFFSET: usize = 8;
+/// Maximum SID size in bytes (68 per MS-DTYP §2.4.2).
+const SECURITY_MAX_SID_SIZE: u32 = 68;
+/// Low integrity RID (0x1000).
+const SECURITY_MANDATORY_LOW_RID: u32 = 0x1000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -258,8 +264,16 @@ fn apply_low_integrity(pid: u32) -> Result<(), ToolError> {
             })?;
         let _ = CloseHandle(h_process);
 
-        let mut low_sid = PSID::default();
-        CreateWellKnownSid(WinLowLabelSid, None, low_sid, &mut 0u32).map_err(|e| {
+        // Allocate a fixed max-size buffer and create the Low IL SID in a
+        // single call.  The two-call "query size then allocate" pattern is
+        // error-prone here (e.g. passing a literal `&mut 0u32` for the size
+        // parameter silently breaks the query).  SID has a known maximum
+        // length (SECURITY_MAX_SID_SIZE = 68 bytes), so a fixed buffer with
+        // a mutable cbSid variable is simpler and correct.
+        let mut sid_buf: [u8; SECURITY_MAX_SID_SIZE as usize] = [0u8; SECURITY_MAX_SID_SIZE as usize];
+        let low_sid = PSID(sid_buf.as_mut_ptr() as *mut std::ffi::c_void);
+        let mut cb_sid = SECURITY_MAX_SID_SIZE;
+        CreateWellKnownSid(WinLowLabelSid, None, low_sid, &mut cb_sid).map_err(|e| {
             let _ = CloseHandle(h_token);
             ToolError::SandboxDenied(format!("CreateWellKnownSid failed: {:?}", e))
         })?;
@@ -825,7 +839,7 @@ mod tests {
 
         let flags = get_dacl_ace_flags(test_dir.path());
         // At least one ACE should have CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE.
-        let ci_oi = (CONTAINER_INHERIT_ACE.0 | OBJECT_INHERIT_ACE.0) as u8;
+        let ci_oi = CONTAINER_INHERIT_ACE.0 | OBJECT_INHERIT_ACE.0;
         assert!(
             flags.iter().any(|&f| f & ci_oi == ci_oi),
             "expected at least one ACE with CI|OI flags, got: {:?}",
@@ -970,7 +984,7 @@ mod tests {
     }
 
     /// Get ACE flags for each ACE in the DACL.
-    fn get_dacl_ace_flags(path: &Path) -> Vec<u8> {
+    fn get_dacl_ace_flags(path: &Path) -> Vec<u32> {
         unsafe {
             let path_wide: Vec<u16> = path
                 .to_string_lossy()
@@ -1013,6 +1027,120 @@ mod tests {
             }
             LocalFree(HLOCAL(psd.0));
             flags
+        }
+    }
+
+    /// Verify that applying a Low Integrity token actually results in a token
+    /// whose integrity level is SECURITY_MANDATORY_LOW_RID (0x1000).
+    ///
+    /// This is the verification test for F01/F03: the original code created a
+    /// PSID but `CreateWellKnownSid` never actually wrote the SID bytes into
+    /// it, so the token silently stayed at Medium IL.  This test proves the
+    /// fix by checking the real integrity level with `GetTokenInformation`.
+    #[test]
+    fn test_low_integrity_token_verified() {
+        unsafe {
+            // Spawn a dummy child process to apply low integrity to.
+            let mut child = std::process::Command::new("cmd")
+                .arg("/c")
+                .arg("echo ok")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn cmd");
+
+            let pid = child.id();
+
+            // Open the child process with needed rights.
+            let h_process = OpenProcess(
+                PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION,
+                FALSE,
+                pid,
+            )
+            .expect("OpenProcess");
+
+            let mut h_token = HANDLE::default();
+            OpenProcessToken(h_process, TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, &mut h_token)
+                .expect("OpenProcessToken");
+            let _ = CloseHandle(h_process);
+
+            // Create Low IL SID using the fixed single-call pattern.
+            let mut sid_buf: [u8; SECURITY_MAX_SID_SIZE as usize] =
+                [0u8; SECURITY_MAX_SID_SIZE as usize];
+            let low_sid = PSID(sid_buf.as_mut_ptr() as *mut std::ffi::c_void);
+            let mut cb_sid = SECURITY_MAX_SID_SIZE;
+            CreateWellKnownSid(WinLowLabelSid, None, low_sid, &mut cb_sid)
+                .expect("CreateWellKnownSid");
+
+            // Set the token to Low Integrity.
+            let label = TOKEN_MANDATORY_LABEL {
+                Label: windows::Win32::Security::SID_AND_ATTRIBUTES {
+                    Sid: low_sid,
+                    Attributes: SE_GROUP_INTEGRITY as u32,
+                },
+            };
+            let label_size = std::mem::size_of::<TOKEN_MANDATORY_LABEL>() as u32;
+            SetTokenInformation(
+                h_token,
+                TokenIntegrityLevel,
+                &label as *const _ as *const std::ffi::c_void,
+                label_size,
+            )
+            .expect("SetTokenInformation");
+
+            // Read back TokenIntegrityLevel to verify it's actually Low.
+            let mut return_length: u32 = 0;
+            let _ = GetTokenInformation(
+                h_token,
+                TokenIntegrityLevel,
+                None,
+                0,
+                &mut return_length,
+            );
+
+            let mut buf: Vec<u8> = vec![0u8; return_length as usize];
+            GetTokenInformation(
+                h_token,
+                TokenIntegrityLevel,
+                Some(buf.as_mut_ptr() as *mut std::ffi::c_void),
+                return_length,
+                &mut return_length,
+            )
+            .expect("GetTokenInformation TokenIntegrityLevel");
+
+            let _ = CloseHandle(h_token);
+
+            // The buffer starts with TOKEN_MANDATORY_LABEL.
+            let tml = &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL);
+            let sid = tml.Label.Sid;
+
+            // Get the last sub-authority (the RID) and assert it's Low.
+            let sub_auth_count_ptr = GetSidSubAuthorityCount(sid);
+            assert!(!sub_auth_count_ptr.is_null(), "GetSidSubAuthorityCount returned null");
+            let count = *sub_auth_count_ptr as usize;
+            assert!(count > 0, "SID must have at least one sub-authority");
+
+            let last_idx = count - 1;
+            let last_sub_auth_ptr = GetSidSubAuthority(sid, last_idx as u32);
+            assert!(
+                !last_sub_auth_ptr.is_null(),
+                "GetSidSubAuthority({}) returned null",
+                last_idx
+            );
+            let rid = *last_sub_auth_ptr;
+
+            assert_eq!(
+                rid,
+                SECURITY_MANDATORY_LOW_RID,
+                "Expected Low IL RID (0x{:X}), got 0x{:X}",
+                SECURITY_MANDATORY_LOW_RID,
+                rid
+            );
+
+            // Clean up the child.
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

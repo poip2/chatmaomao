@@ -77,6 +77,12 @@ impl ProcessExecutor for SandboxExecutor {
         on_stderr: Arc<dyn OutputHandler>,
     ) -> Result<ProcessExit, ToolError> {
         // Build the sandbox-wrapped std::process::Command.
+        // macOS returns a SeatbeltGuard that keeps the SBPL profile temp file
+        // alive until the child exits.
+        #[cfg(target_os = "macos")]
+        let (mut std_cmd, _seatbelt_guard) =
+            platform::build_sandboxed_command(command, cwd, &self.policy)?;
+        #[cfg(not(target_os = "macos"))]
         let mut std_cmd =
             platform::build_sandboxed_command(command, cwd, &self.policy)?;
 

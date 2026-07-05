@@ -40,12 +40,19 @@ use std::path::{Path, PathBuf};
 
 use crate::agent::types::{NetworkPolicy, SandboxMode, SandboxPolicy, ToolError};
 
+/// Guard that keeps the SBPL profile temp file alive for the child process lifetime.
+/// On drop, the temp file is removed.
+pub struct SeatbeltGuard {
+    _profile: Option<tempfile::NamedTempFile>,
+}
+
 /// Build a `std::process::Command` that runs `command` via `sandbox-exec`.
+/// Returns the command and a guard that must live for the child's lifetime.
 pub fn build_sandboxed_command(
     command: &str,
     cwd: &Path,
     policy: &SandboxPolicy,
-) -> Result<std::process::Command, ToolError> {
+) -> Result<(std::process::Command, SeatbeltGuard), ToolError> {
     if matches!(policy.mode, SandboxMode::DangerFullAccess) {
         // No sandbox — spawn directly (same as LocalExecutor).
         let mut cmd = std::process::Command::new("sh");
@@ -55,19 +62,18 @@ pub fn build_sandboxed_command(
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        return Ok(cmd);
+        return Ok((cmd, SeatbeltGuard { _profile: None }));
     }
 
     let profile = build_profile(cwd, policy)?;
 
     // Write SBPL to a temporary file that sandbox-exec will read.
+    // The NamedTempFile wrapper is returned to the caller as a guard —
+    // it lives for the child process's entire lifetime and is cleaned up
+    // on drop when the child exits.
     let mut tmp = tempfile::NamedTempFile::new().map_err(|e| ToolError::Io(e))?;
     std::io::Write::write_all(&mut tmp, profile.as_bytes()).map_err(|e| ToolError::Io(e))?;
-    let tmp_path = tmp.into_temp_path();
-    let profile_path = tmp_path.to_string_lossy().to_string();
-    // Keep the temp file alive — sandbox-exec needs it.
-    // We leak the TempPath intentionally; the OS will clean up at process exit.
-    std::mem::forget(tmp_path);
+    let profile_path = tmp.path().to_string_lossy().to_string();
 
     let mut cmd = std::process::Command::new("/usr/bin/sandbox-exec");
     cmd.arg("-f")
@@ -80,7 +86,7 @@ pub fn build_sandboxed_command(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    Ok(cmd)
+    Ok((cmd, SeatbeltGuard { _profile: Some(tmp) }))
 }
 
 /// Build a complete SBPL (version 1) string from policy.
