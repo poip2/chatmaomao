@@ -2,6 +2,15 @@
 
 ## 安全相关 (Security)
 
+### Sandbox known limitations
+**状态**: 已识别，记录在源码 doc comments 中
+**描述**: 各平台沙箱实现均有已知的安全边界限制：
+- **macOS seatbelt**: SBPL 使用 `(allow default)` 默认允许全局文件读取（仅通过 protected_paths + writable_roots 限定边界），不像 Linux bwrap 那样做选择性 `/etc` bind-mount。系统文件如 `/etc/passwd` 在 writable_roots 外但不能被读取限制覆盖——这是后续加固里程碑。参见 `src-tauri/src/agent/sandbox/seatbelt.rs` "Known limitation: global read isolation"。
+- **Linux Landlock fallback**: 网络隔离需要 ABI v4 (Linux 6.7+)，在旧内核上静默退化。bwrap 模式无此限制。
+- **Windows read isolation**: `best-effort`——ACL 设置失败不会阻塞沙箱启动。
+- **ProxyOnly**: 仅在 macOS seatbelt 实现，Linux/Windows 显式报错而非静默降级。
+**相关**: sandbox module doc comments
+
 ### F1 - 路径校验增强
 **状态**: 第一档（后缀白名单）已完成，agent tools 已完成全面校验，commands 仍待修复
 **文件**: `src-tauri/src/commands/file.rs`（待修复）, `src-tauri/src/agent/tools/mod.rs`（已完成）

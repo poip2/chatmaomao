@@ -10,7 +10,7 @@
 //!       │
 //!       ▼
 //!   `LocalExecutor` (direct spawn, no sandbox — this step)
-//!       │  (step 4: SandboxExecutor wraps seatbelt/bwrap here)
+//!       │  (step 4: SandboxExecutor wraps seatbelt/bwrap/Job Object here)
 //!
 //! Parameters (JSON):
 //!   `command`  (string, required) — shell command to run.
@@ -81,7 +81,8 @@ impl<F: Fn(&[u8]) + Send + Sync + 'static> OutputHandler for F {
 /// - Wait for the **process** to exit, not for streams to close.
 ///
 /// **Step 4 sandbox integration**: write a `SandboxExecutor` that wraps the child
-/// in seatbelt (macOS) / bwrap+landlock (Linux), implementing this same trait.
+/// in seatbelt (macOS) / bwrap+landlock (Linux) / Job Object+Low-IL token (Windows),
+/// implementing this same trait.
 /// `BashTool` only depends on `ProcessExecutor`, so no BashTool changes needed.
 #[async_trait]
 pub trait ProcessExecutor: Send + Sync {
