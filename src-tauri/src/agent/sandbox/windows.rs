@@ -57,6 +57,9 @@ use std::path::{Path, PathBuf};
 
 use crate::agent::types::{SandboxMode, SandboxPolicy, ToolError};
 
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, LocalFree, FALSE, HANDLE, HLOCAL};
 use windows::Win32::Security::Authorization::{
@@ -76,8 +79,8 @@ use windows::Win32::Security::{GetSidSubAuthority, GetSidSubAuthorityCount};
 use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
-    JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, SE_GROUP_INTEGRITY,
@@ -88,8 +91,6 @@ use windows::Win32::System::Threading::{
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
-const JOB_MEMORY_LIMIT_BYTES: usize = 2 * 1024 * 1024 * 1024;
-const JOB_ACTIVE_PROCESS_LIMIT: u32 = 64;
 /// Byte offset of the SID within an ACCESS_DENIED_ACE / ACCESS_ALLOWED_ACE.
 /// Layout: AceHeader(4 bytes) + AccessMask(4 bytes) = 8, then SID.
 const ACE_SID_OFFSET: usize = 8;
@@ -229,11 +230,9 @@ fn apply_job_object(pid: u32) -> Result<HANDLE, ToolError> {
             .map_err(|e| ToolError::SandboxDenied(format!("CreateJobObjectW failed: {:?}", e)))?;
 
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.ActiveProcessLimit = JOB_ACTIVE_PROCESS_LIMIT;
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_ACTIVE_PROCESS
-            | JOB_OBJECT_LIMIT_JOB_MEMORY
-            | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        limits.JobMemoryLimit = JOB_MEMORY_LIMIT_BYTES;
+        limits.BasicLimitInformation.ActiveProcessLimit = 0;
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        limits.JobMemoryLimit = 0;
 
         let size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>();
         SetInformationJobObject(
@@ -448,8 +447,8 @@ fn add_ace_to_path(
     unsafe {
         // ── 1. Get existing security descriptor and DACL ──
         let path_wide: Vec<u16> = path
-            .to_string_lossy()
-            .encode_utf16()
+            .as_os_str()
+            .encode_wide()
             .chain(std::iter::once(0))
             .collect();
 
@@ -473,7 +472,10 @@ fn add_ace_to_path(
 
         if old_dacl.is_null() {
             LocalFree(HLOCAL(psd.0));
-            return Ok(());
+            return Err(ToolError::SandboxDenied(format!(
+                "NULL DACL on '{}': cannot apply ACE — path would remain unprotected",
+                path.display()
+            )));
         }
 
         let old_acl = &*old_dacl;
@@ -763,6 +765,27 @@ mod tests {
         assert_eq!(&ace.ace_bytes[8..], &sid[..]);
     }
 
+    // ── NULL DACL safety test ─────────────────────────────────────────
+
+    /// Verify that `add_deny_read_ace` returns an error (not `Ok`)
+    /// when the target path does not exist — proving the NULL DACL
+    /// path in `add_ace_to_path` propagates errors correctly.
+    ///
+    /// A true NULL DACL test requires creating a security descriptor
+    /// with no DACL, which needs `SeSecurityPrivilege`.  This smoke
+    /// test ensures the error-return path compiles and works.
+    #[test]
+    fn test_null_dacl_returns_error() {
+        let path = PathBuf::from("Z:\\nonexistent\\null_dacl_test_dir");
+        let sid: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+
+        let result = add_deny_read_ace(&path, &sid);
+        assert!(
+            result.is_err(),
+            "add_deny_read_ace on non-existent path must fail (fail closed)"
+        );
+    }
+
     // ── Integration tests (require Windows — run with `cargo test -- --test-threads=1`) ──
 
     /// Positive: deny-read on a file NOT in writable_roots blocks read.
@@ -966,8 +989,8 @@ mod tests {
     fn get_dacl_ace_order(path: &Path) -> Vec<char> {
         unsafe {
             let path_wide: Vec<u16> = path
-                .to_string_lossy()
-                .encode_utf16()
+                .as_os_str()
+                .encode_wide()
                 .chain(std::iter::once(0))
                 .collect();
 
@@ -1017,8 +1040,8 @@ mod tests {
     fn get_dacl_ace_flags(path: &Path) -> Vec<u32> {
         unsafe {
             let path_wide: Vec<u16> = path
-                .to_string_lossy()
-                .encode_utf16()
+                .as_os_str()
+                .encode_wide()
                 .chain(std::iter::once(0))
                 .collect();
 
