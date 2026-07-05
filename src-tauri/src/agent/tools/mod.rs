@@ -122,6 +122,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// 1. **Containment** — the resolved path MUST be a descendant of `cwd`.
 ///    `canonicalize()` resolves all `..` and symlinks, so path-traversal
 ///    payloads like `../../etc/passwd` are caught here.
+///    Violations return `ToolError::NotFound`.
 ///
 /// 2. **Protected paths** — the resolved path MUST NOT start with any
 ///    `protected_paths` prefix (e.g. `.git`, `.agents`). Protected paths are
@@ -129,6 +130,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 ///    its joined (non-canonical) form is used for the prefix check, so that
 ///    creating a file inside a not-yet-existing protected directory is also
 ///    blocked.
+///    Violations return `ToolError::SandboxDenied`.
 ///
 /// `must_exist`: if `true`, the path is canonicalized directly (file must
 /// exist — used by read and edit). If `false`, canonicalization is attempted

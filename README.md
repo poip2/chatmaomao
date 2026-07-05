@@ -14,7 +14,7 @@ Frontend (Svelte)   ←→   Tauri commands (Rust)   ←→   AI Agent Backend
                                                          │    └── bash     (sandboxed shell executor)
                                                          └── sandbox      (platform-specific sandbox backends)
                                                               ├── linux    (bwrap + landlock)
-                                                              ├── windows  (job object + low-IL token)
+                                                              ├── windows  (job object + low-IL token + ACL read isolation)
                                                               └── seatbelt (macOS sandbox-exec)
 ```
 
