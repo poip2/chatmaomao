@@ -55,7 +55,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::agent::types::{SandboxMode, SandboxPolicy, ToolError};
+use crate::agent::types::{NetworkPolicy, SandboxMode, SandboxPolicy, ToolError};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, LocalFree, FALSE, HANDLE, HLOCAL};
@@ -577,7 +577,7 @@ fn add_ace_to_path(
                     AddAccessDeniedAceEx(
                         new_acl_ptr,
                         ACL_REVISION,
-                        ACE_FLAGS(ace.ace_flags as u32),
+                        ACE_FLAGS(ace.ace_flags),
                         orig_mask,
                         sid_ptr,
                     )
@@ -590,7 +590,7 @@ fn add_ace_to_path(
                     AddAccessAllowedAceEx(
                         new_acl_ptr,
                         ACL_REVISION,
-                        ACE_FLAGS(ace.ace_flags as u32),
+                        ACE_FLAGS(ace.ace_flags),
                         orig_mask,
                         sid_ptr,
                     )
@@ -938,7 +938,7 @@ mod tests {
         let mut cmd = build_sandboxed_command(command, cwd, policy)?;
         cmd.current_dir(cwd);
 
-        let mut child = cmd.spawn().map_err(|e| ToolError::Io(e))?;
+        let child = cmd.spawn().map_err(|e| ToolError::Io(e))?;
         let pid = child.id();
 
         // Apply sandboxing (deny-read ACEs, etc.)
@@ -954,11 +954,12 @@ mod tests {
             ProcessExit::Code(output.status.code().unwrap_or(1))
         };
 
-        Ok((
+        let result = Ok((
             String::from_utf8_lossy(&stdout.lock().unwrap()).to_string(),
             String::from_utf8_lossy(&stderr.lock().unwrap()).to_string(),
             exit,
-        ))
+        ));
+        result
     }
 
     /// Get DACL ACE order as a string of 'D' (deny) / 'A' (allow) characters.

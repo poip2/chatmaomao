@@ -650,13 +650,13 @@ mod tests {
 
         // Read the PID that the shell wrote before exec'ing sleep.
         let pid_str = std::fs::read_to_string(&pid_file).unwrap();
-        let pid: i32 = pid_str.trim().parse().unwrap();
+        let _pid: i32 = pid_str.trim().parse().unwrap();
 
         // kill -0 checks if the process exists (returns 0 if alive, non-zero if not).
         #[cfg(unix)]
         {
-            let alive = unsafe { libc::kill(pid, 0) == 0 };
-            assert!(!alive, "process {} should be dead", pid);
+            let alive = unsafe { libc::kill(_pid, 0) == 0 };
+            assert!(!alive, "process {} should be dead", _pid);
         }
     }
 
