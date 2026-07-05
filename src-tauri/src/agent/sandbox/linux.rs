@@ -295,10 +295,7 @@ fn apply_landlock_rules(
                 created = created
                     .add_rule(PathBeneath::new(fd, read_access | AccessFs::Execute))
                     .map_err(|e| {
-                        std::io::Error::other(format!(
-                            "landlock add_rule {}: {}",
-                            sys_dir, e
-                        ))
+                        std::io::Error::other(format!("landlock add_rule {}: {}", sys_dir, e))
                     })?;
             }
         }

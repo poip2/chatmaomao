@@ -258,14 +258,24 @@ fn apply_job_object(pid: u32) -> Result<Option<HANDLE>, ToolError> {
             size as u32,
         ) {
             let _ = CloseHandle(h_job);
-            return Err(ToolError::SandboxDenied(format!("SetInformationJobObject failed: {:?}", e)));
+            return Err(ToolError::SandboxDenied(format!(
+                "SetInformationJobObject failed: {:?}",
+                e
+            )));
         }
 
-        let h_process = match OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION, FALSE, pid) {
+        let h_process = match OpenProcess(
+            PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION,
+            FALSE,
+            pid,
+        ) {
             Ok(h) => h,
             Err(e) => {
                 let _ = CloseHandle(h_job);
-                return Err(ToolError::SandboxDenied(format!("OpenProcess({}) failed: {:?}", pid, e)));
+                return Err(ToolError::SandboxDenied(format!(
+                    "OpenProcess({}) failed: {:?}",
+                    pid, e
+                )));
             }
         };
 
