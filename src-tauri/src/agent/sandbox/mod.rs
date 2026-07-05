@@ -1596,6 +1596,7 @@ echo FORK_DONE
 
     // ── ProxyOnly rejection (non-macOS) ─────────────────────────────────────
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn test_proxy_only_rejected_on_linux() {
         let dir = tempfile::tempdir().unwrap();
