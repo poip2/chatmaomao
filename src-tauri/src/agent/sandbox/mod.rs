@@ -26,7 +26,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::agent::tools::bash::{OutputHandler, ProcessExit, ProcessExecutor};
-use crate::agent::types::{AgentSignal, SandboxPolicy, ToolError};
+use crate::agent::types::{AgentSignal, NetworkPolicy, SandboxPolicy, ToolError};
 
 // ─── Platform modules ────────────────────────────────────────────────────────────
 
@@ -76,6 +76,16 @@ impl ProcessExecutor for SandboxExecutor {
         on_stdout: Arc<dyn OutputHandler>,
         on_stderr: Arc<dyn OutputHandler>,
     ) -> Result<ProcessExit, ToolError> {
+        // ProxyOnly is only implemented on macOS (seatbelt).
+        // On Linux and Windows it must explicitly fail rather than silently
+        // degrading to FullAccess.
+        #[cfg(not(target_os = "macos"))]
+        if matches!(self.policy.network, NetworkPolicy::ProxyOnly) {
+            return Err(ToolError::InvalidArgs(
+                "ProxyOnly network policy is not yet implemented on this platform".into(),
+            ));
+        }
+
         // Build the sandbox-wrapped std::process::Command.
         // macOS returns a SeatbeltGuard that keeps the SBPL profile temp file
         // alive until the child exits.
@@ -1576,5 +1586,37 @@ echo FORK_DONE
             &executor, "cat key_b", &ws, None,
         ).unwrap();
         assert_read_blocked(&exit_b, &out_b, "BEGIN RSA PRIVATE KEY", "macos-dual-symlink-b");
+    }
+
+    // ── ProxyOnly rejection (non-macOS) ─────────────────────────────────────
+
+    #[test]
+    fn test_proxy_only_rejected_on_linux() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        let policy = SandboxPolicy {
+            mode: SandboxMode::ReadOnly,
+            writable_roots: vec![],
+            network: NetworkPolicy::ProxyOnly,
+            protected_paths: vec![],
+        };
+        let executor = SandboxExecutor::new(ws.to_path_buf(), policy);
+
+        let result = run_sync(&executor, "echo hi", ws, None);
+
+        match result {
+            Err(ToolError::InvalidArgs(msg)) => {
+                assert!(
+                    msg.contains("ProxyOnly"),
+                    "expected ProxyOnly error message, got: {}",
+                    msg
+                );
+                println!("ProxyOnly correctly rejected: {}", msg);
+            }
+            other => panic!(
+                "Expected ToolError::InvalidArgs with ProxyOnly message, got: {:?}",
+                other
+            ),
+        }
     }
 }

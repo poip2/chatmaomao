@@ -159,7 +159,7 @@ pub fn apply_sandbox_post_spawn(
     cwd: &Path,
     policy: &SandboxPolicy,
 ) -> Result<JobHandle, ToolError> {
-    apply_job_object(pid)?;
+    let h_job = apply_job_object(pid)?;
 
     if matches!(policy.mode, SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite) {
         // Read isolation: deny-read %USERPROFILE%, allow-read writable_roots + cwd.
@@ -168,18 +168,31 @@ pub fn apply_sandbox_post_spawn(
         let _ = apply_low_integrity(pid);
     }
 
-    Ok(JobHandle { pid })
+    Ok(JobHandle { pid, h_job })
 }
 
 // ─── JobHandle ───────────────────────────────────────────────────────────────────
 
+/// RAII guard for a sandboxed child process.
+///
+/// Holds the kernel Job Object handle.  On drop, closing the handle triggers
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` — all processes in the job are
+/// terminated.  The `pid` secondary kill is a safety net.
 pub struct JobHandle {
     pid: u32,
+    h_job: HANDLE,
 }
 
 impl Drop for JobHandle {
     fn drop(&mut self) {
         unsafe {
+            // CloseHandle on the Job Object first — this is the primary
+            // cleanup mechanism.  JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE ensures
+            // all processes in the job are terminated.
+            let _ = CloseHandle(self.h_job);
+
+            // Safety net: if the process somehow survived the job kill,
+            // terminate it directly.
             let h = OpenProcess(
                 PROCESS_SET_INFORMATION
                     | windows::Win32::System::Threading::PROCESS_TERMINATE,
@@ -196,7 +209,7 @@ impl Drop for JobHandle {
 
 // ─── Job Object ──────────────────────────────────────────────────────────────────
 
-fn apply_job_object(pid: u32) -> Result<(), ToolError> {
+fn apply_job_object(pid: u32) -> Result<HANDLE, ToolError> {
     unsafe {
         let h_job = CreateJobObjectW(None, PCWSTR::null()).map_err(|e| {
             ToolError::SandboxDenied(format!("CreateJobObjectW failed: {:?}", e))
@@ -238,9 +251,8 @@ fn apply_job_object(pid: u32) -> Result<(), ToolError> {
         })?;
 
         let _ = CloseHandle(h_process);
-        std::mem::forget(h_job);
+        Ok(h_job)
     }
-    Ok(())
 }
 
 // ─── Low Integrity Token ─────────────────────────────────────────────────────────
@@ -461,7 +473,13 @@ fn add_ace_to_path(
 
         let old_acl = &*old_dacl;
 
-        // ── 2. Collect existing explicit ACEs classified as deny / allow ──
+        // ── 2. Collect existing ACEs classified as deny / allow ──
+        //
+        // When protect=true: convert inherited ACEs to explicit instead of
+        // dropping them, so SYSTEM/Administrators permissions are preserved.
+        // Exception: inherited DENY ACEs are dropped — those are the
+        // %USERPROFILE% deny-read ACEs that we want to override with our
+        // explicit allow on workspace directories.
 
         let mut existing_denies: Vec<AceCopy> = Vec::new();
         let mut existing_allows: Vec<AceCopy> = Vec::new();
@@ -476,8 +494,20 @@ fn add_ace_to_path(
             }
             let header = &*(ace_ptr as *const ACE_HEADER);
 
-            // Skip inherited ACEs — the system recomputes them from the parent.
-            if (header.AceFlags as u32 & INHERITED_ACE.0) != 0 {
+            let is_inherited = (header.AceFlags as u32 & INHERITED_ACE.0) != 0;
+
+            if is_inherited && !protect {
+                // Without protection: drop inherited ACEs — the system
+                // recomputes them from the parent after SetNamedSecurityInfoW.
+                continue;
+            }
+
+            if is_inherited && protect && header.AceType as u32 == ACCESS_DENIED_ACE_TYPE {
+                // With protection: drop inherited DENY ACEs.  These are the
+                // %USERPROFILE% deny-read ACEs we placed earlier that got
+                // inherited down.  We are adding an explicit allow on this
+                // directory to override them — keeping them would make the
+                // override pointless.
                 continue;
             }
 
@@ -485,9 +515,17 @@ fn add_ace_to_path(
             let ace_bytes =
                 std::slice::from_raw_parts(ace_ptr as *const u8, total_size).to_vec();
 
+            // When converting inherited to explicit, strip the INHERITED_ACE
+            // flag so it becomes a regular explicit ACE.
+            let ace_flags = if is_inherited && protect {
+                header.AceFlags as u32 & !INHERITED_ACE.0
+            } else {
+                header.AceFlags as u32
+            };
+
             let copy = AceCopy {
                 ace_type: header.AceType as u32,
-                ace_flags: header.AceFlags as u32,
+                ace_flags,
                 ace_bytes,
             };
 
@@ -679,7 +717,7 @@ mod tests {
 
     #[test]
     fn test_job_handle_stores_pid() {
-        let jh = JobHandle { pid: 42 };
+        let jh = JobHandle { pid: 42, h_job: HANDLE::default() };
         assert_eq!(jh.pid, 42);
         drop(jh);
     }
@@ -911,9 +949,7 @@ mod tests {
         let pid = child.id();
 
         // Apply sandboxing (deny-read ACEs, etc.)
-        if let Some(pid) = pid {
-            let _guard = apply_sandbox_post_spawn(pid, cwd, policy)?;
-        }
+        let _guard = apply_sandbox_post_spawn(pid, cwd, policy)?;
 
         let output = child.wait_with_output().map_err(|e| ToolError::Io(e))?;
         on_stdout.handle(&output.stdout);
@@ -1030,17 +1066,16 @@ mod tests {
         }
     }
 
-    /// Verify that applying a Low Integrity token actually results in a token
-    /// whose integrity level is SECURITY_MANDATORY_LOW_RID (0x1000).
+    /// Verify that the production `apply_low_integrity` function actually
+    /// results in a token whose integrity level is SECURITY_MANDATORY_LOW_RID.
     ///
-    /// This is the verification test for F01/F03: the original code created a
-    /// PSID but `CreateWellKnownSid` never actually wrote the SID bytes into
-    /// it, so the token silently stayed at Medium IL.  This test proves the
-    /// fix by checking the real integrity level with `GetTokenInformation`.
+    /// This test calls the real production code path — it does not reimplement
+    /// the token logic inline.  If `apply_low_integrity` later changes, this
+    /// test catches regressions.
     #[test]
     fn test_low_integrity_token_verified() {
         unsafe {
-            // Spawn a dummy child process to apply low integrity to.
+            // Spawn a dummy child process.
             let mut child = std::process::Command::new("cmd")
                 .arg("/c")
                 .arg("echo ok")
@@ -1052,44 +1087,23 @@ mod tests {
 
             let pid = child.id();
 
-            // Open the child process with needed rights.
+            // Call the production function under test.
+            apply_low_integrity(pid).expect("apply_low_integrity");
+
+            // Re-open the process to read back the token integrity level.
             let h_process = OpenProcess(
-                PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION,
+                PROCESS_QUERY_INFORMATION,
                 FALSE,
                 pid,
             )
             .expect("OpenProcess");
 
             let mut h_token = HANDLE::default();
-            OpenProcessToken(h_process, TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, &mut h_token)
+            OpenProcessToken(h_process, TOKEN_QUERY, &mut h_token)
                 .expect("OpenProcessToken");
             let _ = CloseHandle(h_process);
 
-            // Create Low IL SID using the fixed single-call pattern.
-            let mut sid_buf: [u8; SECURITY_MAX_SID_SIZE as usize] =
-                [0u8; SECURITY_MAX_SID_SIZE as usize];
-            let low_sid = PSID(sid_buf.as_mut_ptr() as *mut std::ffi::c_void);
-            let mut cb_sid = SECURITY_MAX_SID_SIZE;
-            CreateWellKnownSid(WinLowLabelSid, None, low_sid, &mut cb_sid)
-                .expect("CreateWellKnownSid");
-
-            // Set the token to Low Integrity.
-            let label = TOKEN_MANDATORY_LABEL {
-                Label: windows::Win32::Security::SID_AND_ATTRIBUTES {
-                    Sid: low_sid,
-                    Attributes: SE_GROUP_INTEGRITY as u32,
-                },
-            };
-            let label_size = std::mem::size_of::<TOKEN_MANDATORY_LABEL>() as u32;
-            SetTokenInformation(
-                h_token,
-                TokenIntegrityLevel,
-                &label as *const _ as *const std::ffi::c_void,
-                label_size,
-            )
-            .expect("SetTokenInformation");
-
-            // Read back TokenIntegrityLevel to verify it's actually Low.
+            // Read back TokenIntegrityLevel.
             let mut return_length: u32 = 0;
             let _ = GetTokenInformation(
                 h_token,
