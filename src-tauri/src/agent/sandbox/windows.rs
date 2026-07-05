@@ -764,7 +764,7 @@ mod tests {
     fn test_job_handle_stores_pid() {
         let jh = JobHandle {
             pid: 42,
-            h_job: HANDLE::default(),
+            h_job: Some(HANDLE::default()),
         };
         assert_eq!(jh.pid, 42);
         drop(jh);
