@@ -135,10 +135,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.content, "hello world\n");
+        // Cross-platform path comparison: use to_string_lossy() which
+        // works on both Unix and Windows without symlink resolution.
+        let expected_path = dir.path().join("hello.txt");
+        let actual_path_str = result.details["path"].as_str().unwrap();
         assert_eq!(
-            std::fs::canonicalize(result.details["path"].as_str().unwrap())
-                .unwrap_or_else(|_| PathBuf::from(result.details["path"].as_str().unwrap())),
-            std::fs::canonicalize(dir.path().join("hello.txt")).unwrap(),
+            PathBuf::from(actual_path_str).to_string_lossy(),
+            expected_path.to_string_lossy()
         );
         assert_eq!(result.details["size_bytes"], 12);
     }

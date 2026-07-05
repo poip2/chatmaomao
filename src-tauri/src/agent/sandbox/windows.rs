@@ -176,27 +176,35 @@ pub fn apply_sandbox_post_spawn(
 ) -> Result<JobHandle, ToolError> {
     let h_job = apply_job_object(pid)?;
 
+    let mut acl_restores: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     if matches!(
         policy.mode,
         SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite
     ) {
         // Read isolation: deny-read %USERPROFILE%, allow-read writable_roots + cwd,
         // and deny-read protected_paths via kernel ACL.
-        apply_read_isolation(pid, cwd, policy)?;
+        // Saves original DACLs so they can be restored when the guard drops.
+        acl_restores = apply_read_isolation(pid, cwd, policy)?;
         // Best-effort: downgrade to Low integrity.
         let _ = apply_low_integrity(pid);
     }
 
-    Ok(JobHandle { pid, h_job })
+    Ok(JobHandle {
+        pid,
+        h_job,
+        acl_restores,
+    })
 }
 
 // ─── JobHandle ───────────────────────────────────────────────────────────────────
 
 /// RAII guard for a sandboxed child process.
 ///
-/// Holds the kernel Job Object handle.  On drop, closing the handle triggers
-/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` — all processes in the job are
-/// terminated.  The `pid` secondary kill is a safety net.
+/// Holds the kernel Job Object handle and ACL restore data for any paths
+/// whose DACL was modified during sandbox setup.  On drop, the guard:
+/// 1. Restores original DACLs on all modified paths (undoes read isolation)
+/// 2. Closes the Job Object handle (triggering KILL_ON_JOB_CLOSE)
+/// 3. Terminates the child as a safety net
 ///
 /// # Safety
 ///
@@ -206,6 +214,9 @@ pub fn apply_sandbox_post_spawn(
 pub struct JobHandle {
     pid: u32,
     h_job: Option<HANDLE>,
+    /// (path, original DACL bytes) — restored on drop to undo
+    /// filesystem ACL modifications applied by `apply_read_isolation`.
+    acl_restores: Vec<(PathBuf, Vec<u8>)>,
 }
 
 // SAFETY: HANDLE is a kernel handle index (not a raw pointer to memory).
@@ -217,6 +228,9 @@ unsafe impl Send for JobHandle {}
 impl Drop for JobHandle {
     fn drop(&mut self) {
         unsafe {
+            // Restore original DACLs on any paths we modified.
+            restore_acl_guard(&mut self.acl_restores);
+
             // Close the Job Object handle if we have one.  KILL_ON_JOB_CLOSE
             // ensures all processes in the job are terminated.
             if let Some(h) = self.h_job {
@@ -365,20 +379,103 @@ fn apply_low_integrity(pid: u32) -> Result<(), ToolError> {
 
 // ─── Read isolation ──────────────────────────────────────────────────────────────
 
+/// Save the current DACL of `path` as raw bytes for later restoration.
+fn save_dacl(path: &Path) -> Result<Vec<u8>, ToolError> {
+    unsafe {
+        let path_wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut psd = PSECURITY_DESCRIPTOR::default();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let result = GetNamedSecurityInfoW(
+            PCWSTR::from_raw(path_wide.as_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(&mut dacl),
+            None,
+            &mut psd,
+        );
+        ok_win32(
+            result,
+            &format!("save_dacl: GetNamedSecurityInfoW for {}", path.display()),
+        )?;
+
+        if dacl.is_null() {
+            if psd.0 != std::ptr::null_mut() {
+                LocalFree(HLOCAL(psd.0));
+            }
+            return Err(ToolError::SandboxDenied(format!(
+                "save_dacl: NULL DACL on {}",
+                path.display()
+            )));
+        }
+
+        let acl = &*dacl;
+        let acl_size = acl.AclSize as usize;
+        let acl_bytes =
+            std::slice::from_raw_parts(dacl as *const u8, acl_size).to_vec();
+
+        LocalFree(HLOCAL(psd.0));
+        Ok(acl_bytes)
+    }
+}
+
+/// Restore original DACLs for all paths saved during sandbox setup.
+///
+/// Called from `JobHandle::drop`.  Failures are silent (the guard is
+/// already tearing down).
+unsafe fn restore_acl_guard(restores: &mut Vec<(PathBuf, Vec<u8>)>) {
+    for (path, dacl_bytes) in restores.drain(..) {
+        let path_wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let _ = SetNamedSecurityInfoW(
+            PCWSTR::from_raw(path_wide.as_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            PSID(std::ptr::null_mut()),
+            PSID(std::ptr::null_mut()),
+            Some(dacl_bytes.as_ptr() as *mut ACL),
+            None,
+        );
+    }
+}
+
 /// Apply deny-read on %USERPROFILE% and allow-read on writable_roots / cwd.
 ///
 /// Best-effort: failures are logged but never fail the sandbox setup.
-fn apply_read_isolation(pid: u32, cwd: &Path, policy: &SandboxPolicy) -> Result<(), ToolError> {
+///
+/// Returns a list of (path, original_DACL_bytes) for every path whose DACL
+/// was modified.  The caller must restore these DACLs when the sandbox is
+/// torn down to avoid permanently changing filesystem ACLs (which breaks
+/// subsequent tests that run in the same process under %USERPROFILE%).
+fn apply_read_isolation(
+    pid: u32,
+    cwd: &Path,
+    policy: &SandboxPolicy,
+) -> Result<Vec<(PathBuf, Vec<u8>)>, ToolError> {
+    let mut restores: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+
     // 1. Get the child token's user SID.
     let sid = match get_child_token_user_sid(pid) {
         Ok(s) => s,
-        Err(_) => return Ok(()), // best-effort
+        Err(_) => return Ok(restores), // best-effort
     };
 
     // 2. Deny-read on %USERPROFILE%.
     if let Ok(profile) = std::env::var("USERPROFILE") {
         let profile_path = PathBuf::from(&profile);
         if profile_path.exists() {
+            if let Ok(orig) = save_dacl(&profile_path) {
+                restores.push((profile_path.clone(), orig));
+            }
             let _ = add_deny_read_ace(&profile_path, &sid);
         }
     }
@@ -399,6 +496,9 @@ fn apply_read_isolation(pid: u32, cwd: &Path, policy: &SandboxPolicy) -> Result<
 
     for path in &allow_paths {
         if path.exists() {
+            if let Ok(orig) = save_dacl(path) {
+                restores.push((path.clone(), orig));
+            }
             let _ = add_allow_read_ace(path, &sid);
         }
     }
@@ -413,11 +513,14 @@ fn apply_read_isolation(pid: u32, cwd: &Path, policy: &SandboxPolicy) -> Result<
             cwd.join(prot)
         };
         if resolved.exists() {
+            if let Ok(orig) = save_dacl(&resolved) {
+                restores.push((resolved.clone(), orig));
+            }
             let _ = add_deny_read_ace(&resolved, &sid);
         }
     }
 
-    Ok(())
+    Ok(restores)
 }
 
 /// Extract the user SID from a child process's token as raw bytes.
@@ -765,6 +868,7 @@ mod tests {
         let jh = JobHandle {
             pid: 42,
             h_job: Some(HANDLE::default()),
+            acl_restores: vec![],
         };
         assert_eq!(jh.pid, 42);
         drop(jh);
