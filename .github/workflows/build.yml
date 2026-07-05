@@ -1,0 +1,83 @@
+# 放到仓库的 .github/workflows/release.yml
+#
+# 触发方式：打一个 vX.Y.Z 格式的 tag 并 push，比如：
+#   git tag v0.1.0
+#   git push origin v0.1.0
+# 会自动编译 Windows x64 + macOS Apple Silicon 两份产物（不编译 macOS Intel），
+# 并创建一个 GitHub Release（草稿状态，先人工检查再手动发布）。
+#
+# 项目用 pnpm（看到根目录有 pnpm-lock.yaml / pnpm-workspace.yaml），
+# 所以用 pnpm 而不是 npm/yarn。
+
+name: "release"
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: # 也支持手动在 Actions 页面点按钮触发，不一定非要打 tag
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write # 需要这个权限才能创建 Release，见文末说明
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "macos-latest" # Apple Silicon (M1 及以上)，不编译 Intel 版本
+            args: "--target aarch64-apple-darwin"
+          - platform: "windows-latest"
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10 # 钉死版本，别用浮动的，保证半年后重新跑同一个 tag 行为一致
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22 # 同上，钉死版本，不用会随时间漂移的 lts/*
+          cache: "pnpm" # 这里对应用 pnpm，不是 working-directory，缓存的是 pnpm store
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # 这个 target 只有 macOS 用得上，Windows 跑这行也不会报错，只是没用
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      # ── 这一步在仓库根目录跑，不是 src-tauri ──────────────────────
+      # pnpm-workspace.yaml/package.json 都在根目录，装前端依赖必须在这里装
+      - name: Install frontend dependencies (repo root)
+        run: pnpm install
+
+      # ── tauri-action 自己知道 src-tauri 在哪（读 tauri.conf.json），
+      #    不需要你手动 cd 进去，它内部会处理路径 ─────────────────────
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__ # 自动替换成 tauri.conf.json 里的版本号
+          releaseName: "MaoMaoChat v__VERSION__"
+          releaseBody: |
+            查看下方附件下载对应平台的安装包。
+
+            ## 安装说明
+            - **macOS**：下载 `.dmg` 文件。当前是未签名版本，首次打开会被系统拦截，
+              需要右键点击应用 → 选择"打开"，而不是直接双击。
+            - **Windows**：下载 `.msi` 安装包（或 `.exe` NSIS 安装程序）。
+          releaseDraft: true # 先建成草稿，人工确认没问题再手动发布，别一 push tag 就直接公开
+          prerelease: false
+          args: ${{ matrix.args }}
