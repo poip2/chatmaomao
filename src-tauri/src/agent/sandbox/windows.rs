@@ -423,8 +423,7 @@ fn save_dacl(path: &Path) -> Result<Vec<u8>, ToolError> {
 
         let acl = &*dacl;
         let acl_size = acl.AclSize as usize;
-        let acl_bytes =
-            std::slice::from_raw_parts(dacl as *const u8, acl_size).to_vec();
+        let acl_bytes = std::slice::from_raw_parts(dacl as *const u8, acl_size).to_vec();
 
         LocalFree(HLOCAL(psd.0));
         Ok(acl_bytes)
@@ -1130,9 +1129,7 @@ mod tests {
         // Use a fake profile directory so tests never touch the real
         // %USERPROFILE% ACLs.
         let fake_profile = tempfile::tempdir().map_err(|e| ToolError::Io(e))?;
-        let _guard = apply_sandbox_post_spawn_inner(
-            pid, cwd, policy, Some(fake_profile.path()),
-        )?;
+        let _guard = apply_sandbox_post_spawn_inner(pid, cwd, policy, Some(fake_profile.path()))?;
 
         let output = child.wait_with_output().map_err(|e| ToolError::Io(e))?;
         on_stdout.handle(&output.stdout);
