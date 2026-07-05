@@ -64,12 +64,15 @@ use windows::Win32::Security::Authorization::{
 };
 use windows::Win32::Security::{
     AddAccessAllowedAceEx, AddAccessDeniedAceEx, CreateWellKnownSid, GetAce, GetLengthSid,
-    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, InitializeAcl,
-    SetTokenInformation, TokenIntegrityLevel, TokenUser, WinLowLabelSid, ACE_FLAGS, ACE_HEADER,
-    ACL, ACL_REVISION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
-    OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-    SID_IDENTIFIER_AUTHORITY, TOKEN_ADJUST_DEFAULT, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    GetTokenInformation, InitializeAcl, SetTokenInformation, TokenIntegrityLevel, TokenUser,
+    WinLowLabelSid, ACE_FLAGS, ACE_HEADER, ACL, ACL_REVISION, CONTAINER_INHERIT_ACE,
+    DACL_SECURITY_INFORMATION, INHERITED_ACE, OBJECT_INHERIT_ACE,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_ADJUST_DEFAULT,
+    TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
+
+#[cfg(test)]
+use windows::Win32::Security::{GetSidSubAuthority, GetSidSubAuthorityCount};
 use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -178,10 +181,22 @@ pub fn apply_sandbox_post_spawn(
 /// Holds the kernel Job Object handle.  On drop, closing the handle triggers
 /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` — all processes in the job are
 /// terminated.  The `pid` secondary kill is a safety net.
+///
+/// # Safety
+///
+/// This type is `Send` because `HANDLE` is a kernel handle (an index into
+/// the process handle table).  Kernel handles are valid across threads and
+/// the drop guard is always run on the owning thread.
 pub struct JobHandle {
     pid: u32,
     h_job: HANDLE,
 }
+
+// SAFETY: HANDLE is a kernel handle index (not a raw pointer to memory).
+// Kernel handles are valid process-wide and can be safely transferred
+// across thread boundaries.  The Drop impl always runs on the thread that
+// owns this value at destruction time.
+unsafe impl Send for JobHandle {}
 
 impl Drop for JobHandle {
     fn drop(&mut self) {
