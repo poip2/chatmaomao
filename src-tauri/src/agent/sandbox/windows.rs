@@ -58,29 +58,26 @@ use std::path::{Path, PathBuf};
 use crate::agent::types::{SandboxMode, SandboxPolicy, ToolError};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, LocalFree, FALSE, HLOCAL};
-use windows::Win32::Security::{
-    AddAccessAllowedAceEx, AddAccessDeniedAceEx, GetAce, GetLengthSid,
-    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation,
-    InitializeAcl, SetTokenInformation, TokenIntegrityLevel,
-    WinLowLabelSid, CreateWellKnownSid, PSID, ACL, ACL_REVISION, ACE_HEADER,
-    ACE_FLAGS, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
-    OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    SID_IDENTIFIER_AUTHORITY, TOKEN_ADJUST_DEFAULT, TOKEN_MANDATORY_LABEL,
-    TOKEN_QUERY, TokenUser,
-};
+use windows::Win32::Foundation::{CloseHandle, LocalFree, FALSE, HANDLE, HLOCAL};
 use windows::Win32::Security::Authorization::{
     GetNamedSecurityInfoW, SetNamedSecurityInfoW, SE_FILE_OBJECT,
 };
+use windows::Win32::Security::{
+    AddAccessAllowedAceEx, AddAccessDeniedAceEx, CreateWellKnownSid, GetAce, GetLengthSid,
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, InitializeAcl,
+    SetTokenInformation, TokenIntegrityLevel, TokenUser, WinLowLabelSid, ACE_FLAGS, ACE_HEADER,
+    ACL, ACL_REVISION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
+    OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    SID_IDENTIFIER_AUTHORITY, TOKEN_ADJUST_DEFAULT, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+};
 use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-    JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+    JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows::Win32::System::SystemServices::{
-    ACCESS_DENIED_ACE_TYPE, ACCESS_ALLOWED_ACE_TYPE, SE_GROUP_INTEGRITY,
+    ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, SE_GROUP_INTEGRITY,
 };
 use windows::Win32::System::Threading::{
     OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION, PROCESS_SET_INFORMATION,
@@ -104,14 +101,14 @@ const SECURITY_MANDATORY_LOW_RID: u32 = 0x1000;
 /// raw error-code return convention (`GetNamedSecurityInfoW`,
 /// `SetNamedSecurityInfoW`).  Contrast with `GetAce` / `GetTokenInformation`
 /// which already return `Result<()>`.
-fn ok_win32(
-    err: windows::Win32::Foundation::WIN32_ERROR,
-    context: &str,
-) -> Result<(), ToolError> {
+fn ok_win32(err: windows::Win32::Foundation::WIN32_ERROR, context: &str) -> Result<(), ToolError> {
     if err.0 == 0 {
         Ok(())
     } else {
-        Err(ToolError::SandboxDenied(format!("{}: error {}", context, err.0)))
+        Err(ToolError::SandboxDenied(format!(
+            "{}: error {}",
+            context, err.0
+        )))
     }
 }
 
@@ -161,7 +158,10 @@ pub fn apply_sandbox_post_spawn(
 ) -> Result<JobHandle, ToolError> {
     let h_job = apply_job_object(pid)?;
 
-    if matches!(policy.mode, SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite) {
+    if matches!(
+        policy.mode,
+        SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite
+    ) {
         // Read isolation: deny-read %USERPROFILE%, allow-read writable_roots + cwd.
         let _ = apply_read_isolation(pid, cwd, policy);
         // Best-effort: downgrade to Low integrity.
@@ -194,8 +194,7 @@ impl Drop for JobHandle {
             // Safety net: if the process somehow survived the job kill,
             // terminate it directly.
             let h = OpenProcess(
-                PROCESS_SET_INFORMATION
-                    | windows::Win32::System::Threading::PROCESS_TERMINATE,
+                PROCESS_SET_INFORMATION | windows::Win32::System::Threading::PROCESS_TERMINATE,
                 FALSE,
                 self.pid,
             );
@@ -211,9 +210,8 @@ impl Drop for JobHandle {
 
 fn apply_job_object(pid: u32) -> Result<HANDLE, ToolError> {
     unsafe {
-        let h_job = CreateJobObjectW(None, PCWSTR::null()).map_err(|e| {
-            ToolError::SandboxDenied(format!("CreateJobObjectW failed: {:?}", e))
-        })?;
+        let h_job = CreateJobObjectW(None, PCWSTR::null())
+            .map_err(|e| ToolError::SandboxDenied(format!("CreateJobObjectW failed: {:?}", e)))?;
 
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         limits.BasicLimitInformation.ActiveProcessLimit = JOB_ACTIVE_PROCESS_LIMIT;
@@ -264,16 +262,15 @@ fn apply_low_integrity(pid: u32) -> Result<(), ToolError> {
             FALSE,
             pid,
         )
-        .map_err(|_| {
-            ToolError::SandboxDenied("OpenProcess for token downgrade failed".into())
-        })?;
+        .map_err(|_| ToolError::SandboxDenied("OpenProcess for token downgrade failed".into()))?;
 
         let mut h_token = HANDLE::default();
-        OpenProcessToken(h_process, TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, &mut h_token)
-            .map_err(|e| {
+        OpenProcessToken(h_process, TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, &mut h_token).map_err(
+            |e| {
                 let _ = CloseHandle(h_process);
                 ToolError::SandboxDenied(format!("OpenProcessToken failed: {:?}", e))
-            })?;
+            },
+        )?;
         let _ = CloseHandle(h_process);
 
         // Allocate a fixed max-size buffer and create the Low IL SID in a
@@ -282,7 +279,8 @@ fn apply_low_integrity(pid: u32) -> Result<(), ToolError> {
         // parameter silently breaks the query).  SID has a known maximum
         // length (SECURITY_MAX_SID_SIZE = 68 bytes), so a fixed buffer with
         // a mutable cbSid variable is simpler and correct.
-        let mut sid_buf: [u8; SECURITY_MAX_SID_SIZE as usize] = [0u8; SECURITY_MAX_SID_SIZE as usize];
+        let mut sid_buf: [u8; SECURITY_MAX_SID_SIZE as usize] =
+            [0u8; SECURITY_MAX_SID_SIZE as usize];
         let low_sid = PSID(sid_buf.as_mut_ptr() as *mut std::ffi::c_void);
         let mut cb_sid = SECURITY_MAX_SID_SIZE;
         CreateWellKnownSid(WinLowLabelSid, None, low_sid, &mut cb_sid).map_err(|e| {
@@ -362,12 +360,7 @@ fn apply_read_isolation(pid: u32, cwd: &Path, policy: &SandboxPolicy) -> Result<
 /// Extract the user SID from a child process's token as raw bytes.
 fn get_child_token_user_sid(pid: u32) -> Result<Vec<u8>, ToolError> {
     unsafe {
-        let h_process = OpenProcess(
-            PROCESS_QUERY_INFORMATION,
-            FALSE,
-            pid,
-        )
-        .map_err(|e| {
+        let h_process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid).map_err(|e| {
             ToolError::SandboxDenied(format!("OpenProcess for SID failed: {:?}", e))
         })?;
 
@@ -380,13 +373,7 @@ fn get_child_token_user_sid(pid: u32) -> Result<Vec<u8>, ToolError> {
 
         // Get buffer size.
         let mut return_length: u32 = 0;
-        let _ = GetTokenInformation(
-            h_token,
-            TokenUser,
-            None,
-            0,
-            &mut return_length,
-        );
+        let _ = GetTokenInformation(h_token, TokenUser, None, 0, &mut return_length);
 
         let mut buf: Vec<u8> = vec![0u8; return_length as usize];
         GetTokenInformation(
@@ -464,7 +451,10 @@ fn add_ace_to_path(
             &mut psd,
         );
 
-        ok_win32(result, &format!("GetNamedSecurityInfoW failed for {}", path.display()))?;
+        ok_win32(
+            result,
+            &format!("GetNamedSecurityInfoW failed for {}", path.display()),
+        )?;
 
         if old_dacl.is_null() {
             LocalFree(HLOCAL(psd.0));
@@ -512,8 +502,7 @@ fn add_ace_to_path(
             }
 
             let total_size = header.AceSize as usize;
-            let ace_bytes =
-                std::slice::from_raw_parts(ace_ptr as *const u8, total_size).to_vec();
+            let ace_bytes = std::slice::from_raw_parts(ace_ptr as *const u8, total_size).to_vec();
 
             // When converting inherited to explicit, strip the INHERITED_ACE
             // flag so it becomes a regular explicit ACE.
@@ -561,20 +550,12 @@ fn add_ace_to_path(
         }
 
         // ── 5. Add denies first, then allows ──
-        for ace in existing_denies
-            .iter()
-            .chain(existing_allows.iter())
-        {
+        for ace in existing_denies.iter().chain(existing_allows.iter()) {
             // Extract original access mask from bytes [4..8] (stored in the ACE).
             let mask_bytes = &ace.ace_bytes[4..8];
-            let orig_mask = u32::from_le_bytes([
-                mask_bytes[0],
-                mask_bytes[1],
-                mask_bytes[2],
-                mask_bytes[3],
-            ]);
-            let sid_ptr =
-                PSID(ace.ace_bytes[ACE_SID_OFFSET..].as_ptr() as *mut std::ffi::c_void);
+            let orig_mask =
+                u32::from_le_bytes([mask_bytes[0], mask_bytes[1], mask_bytes[2], mask_bytes[3]]);
+            let sid_ptr = PSID(ace.ace_bytes[ACE_SID_OFFSET..].as_ptr() as *mut std::ffi::c_void);
 
             match ace.ace_type {
                 ACCESS_DENIED_ACE_TYPE => {
@@ -587,10 +568,7 @@ fn add_ace_to_path(
                     )
                     .map_err(|e| {
                         LocalFree(HLOCAL(psd.0));
-                        ToolError::SandboxDenied(format!(
-                            "AddAccessDeniedAceEx failed: {:?}",
-                            e
-                        ))
+                        ToolError::SandboxDenied(format!("AddAccessDeniedAceEx failed: {:?}", e))
                     })?;
                 }
                 ACCESS_ALLOWED_ACE_TYPE => {
@@ -603,10 +581,7 @@ fn add_ace_to_path(
                     )
                     .map_err(|e| {
                         LocalFree(HLOCAL(psd.0));
-                        ToolError::SandboxDenied(format!(
-                            "AddAccessAllowedAceEx failed: {:?}",
-                            e
-                        ))
+                        ToolError::SandboxDenied(format!("AddAccessAllowedAceEx failed: {:?}", e))
                     })?;
                 }
                 _ => {}
@@ -635,7 +610,10 @@ fn add_ace_to_path(
 
         LocalFree(HLOCAL(psd.0));
 
-        ok_win32(set_result, &format!("SetNamedSecurityInfoW failed for {}", path.display()))?;
+        ok_win32(
+            set_result,
+            &format!("SetNamedSecurityInfoW failed for {}", path.display()),
+        )?;
 
         Ok(())
     }
@@ -717,7 +695,10 @@ mod tests {
 
     #[test]
     fn test_job_handle_stores_pid() {
-        let jh = JobHandle { pid: 42, h_job: HANDLE::default() };
+        let jh = JobHandle {
+            pid: 42,
+            h_job: HANDLE::default(),
+        };
         assert_eq!(jh.pid, 42);
         drop(jh);
     }
@@ -729,9 +710,7 @@ mod tests {
         // Fake SID: S-1-5-21-... (variable length, typically 28 bytes for
         // domain SIDs).  Use a minimal well-known SID for testing: S-1-1-0
         // (Everyone) is 12 bytes.
-        let everyone_sid: [u8; 12] = [
-            1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
-        ];
+        let everyone_sid: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
         let ace = build_read_ace(&everyone_sid, true);
 
         assert_eq!(ace.ace_type, ACCESS_DENIED_ACE_TYPE);
@@ -793,8 +772,7 @@ mod tests {
             secret_file.display()
         );
 
-        let (out, _err, exit) =
-            run_sandboxed_cmd(&cmd_str, workspace.path(), &policy).unwrap();
+        let (out, _err, exit) = run_sandboxed_cmd(&cmd_str, workspace.path(), &policy).unwrap();
 
         // The deny-read ACE should block the type command.
         assert!(
@@ -828,16 +806,16 @@ mod tests {
             protected_paths: vec![],
         };
 
-        let cmd_str = format!(
-            "cmd /c \"type {}\"",
-            file.display()
-        );
+        let cmd_str = format!("cmd /c \"type {}\"", file.display());
 
-        let (out, _err, exit) =
-            run_sandboxed_cmd(&cmd_str, workspace.path(), &policy).unwrap();
+        let (out, _err, exit) = run_sandboxed_cmd(&cmd_str, workspace.path(), &policy).unwrap();
 
         assert_eq!(exit, ProcessExit::Code(0), "stderr={}", _err);
-        assert!(out.contains("public data"), "should read file, got: {}", out);
+        assert!(
+            out.contains("public data"),
+            "should read file, got: {}",
+            out
+        );
     }
 
     /// DACL verification: after setting deny-read on %USERPROFILE%, the deny
@@ -921,8 +899,8 @@ mod tests {
     // ─── Test helpers ───────────────────────────────────────────────────────
 
     use crate::agent::tools::bash::OutputHandler;
-    use crate::agent::types::AgentSignal;
     use crate::agent::tools::bash::ProcessExit;
+    use crate::agent::types::AgentSignal;
     use std::sync::{Arc, Mutex};
 
     fn run_sandboxed_cmd(
@@ -1091,27 +1069,16 @@ mod tests {
             apply_low_integrity(pid).expect("apply_low_integrity");
 
             // Re-open the process to read back the token integrity level.
-            let h_process = OpenProcess(
-                PROCESS_QUERY_INFORMATION,
-                FALSE,
-                pid,
-            )
-            .expect("OpenProcess");
+            let h_process =
+                OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid).expect("OpenProcess");
 
             let mut h_token = HANDLE::default();
-            OpenProcessToken(h_process, TOKEN_QUERY, &mut h_token)
-                .expect("OpenProcessToken");
+            OpenProcessToken(h_process, TOKEN_QUERY, &mut h_token).expect("OpenProcessToken");
             let _ = CloseHandle(h_process);
 
             // Read back TokenIntegrityLevel.
             let mut return_length: u32 = 0;
-            let _ = GetTokenInformation(
-                h_token,
-                TokenIntegrityLevel,
-                None,
-                0,
-                &mut return_length,
-            );
+            let _ = GetTokenInformation(h_token, TokenIntegrityLevel, None, 0, &mut return_length);
 
             let mut buf: Vec<u8> = vec![0u8; return_length as usize];
             GetTokenInformation(
@@ -1131,7 +1098,10 @@ mod tests {
 
             // Get the last sub-authority (the RID) and assert it's Low.
             let sub_auth_count_ptr = GetSidSubAuthorityCount(sid);
-            assert!(!sub_auth_count_ptr.is_null(), "GetSidSubAuthorityCount returned null");
+            assert!(
+                !sub_auth_count_ptr.is_null(),
+                "GetSidSubAuthorityCount returned null"
+            );
             let count = *sub_auth_count_ptr as usize;
             assert!(count > 0, "SID must have at least one sub-authority");
 
@@ -1145,11 +1115,9 @@ mod tests {
             let rid = *last_sub_auth_ptr;
 
             assert_eq!(
-                rid,
-                SECURITY_MANDATORY_LOW_RID,
+                rid, SECURITY_MANDATORY_LOW_RID,
                 "Expected Low IL RID (0x{:X}), got 0x{:X}",
-                SECURITY_MANDATORY_LOW_RID,
-                rid
+                SECURITY_MANDATORY_LOW_RID, rid
             );
 
             // Clean up the child.

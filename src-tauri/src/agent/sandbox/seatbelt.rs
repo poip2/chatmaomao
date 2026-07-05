@@ -86,7 +86,12 @@ pub fn build_sandboxed_command(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    Ok((cmd, SeatbeltGuard { _profile: Some(tmp) }))
+    Ok((
+        cmd,
+        SeatbeltGuard {
+            _profile: Some(tmp),
+        },
+    ))
 }
 
 /// Build a complete SBPL (version 1) string from policy.
@@ -233,7 +238,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let profile = build_profile(dir.path(), &policy).unwrap();
         assert!(profile.contains("(deny network*)"), "profile:\n{}", profile);
-        assert!(profile.contains("(deny file-write*)"), "profile:\n{}", profile);
+        assert!(
+            profile.contains("(deny file-write*)"),
+            "profile:\n{}",
+            profile
+        );
     }
 
     #[test]
@@ -272,10 +281,12 @@ mod tests {
         let profile = build_profile(ws, &policy).unwrap();
         // Protected .git must appear as a deny (now file-read* file-write*)
         // AFTER the workspace allow.
-        let git_deny_pos =
-            profile.find("(deny file-read* file-write* (subpath").unwrap();
-        let ws_allow_pos =
-            profile.find("(allow file-read* file-write* (subpath").unwrap();
+        let git_deny_pos = profile
+            .find("(deny file-read* file-write* (subpath")
+            .unwrap();
+        let ws_allow_pos = profile
+            .find("(allow file-read* file-write* (subpath")
+            .unwrap();
         assert!(
             git_deny_pos > ws_allow_pos,
             "protected deny must come after writable allow:\n{}",
@@ -296,7 +307,10 @@ mod tests {
         fs::write(&file, "data").unwrap();
 
         let (ancestor, first_missing) = canonicalize_best_effort_macos(&file);
-        assert!(first_missing.is_none(), "existing path should have no missing component");
+        assert!(
+            first_missing.is_none(),
+            "existing path should have no missing component"
+        );
         assert_eq!(ancestor, std::fs::canonicalize(&file).unwrap());
     }
 
@@ -307,7 +321,10 @@ mod tests {
         assert!(!phantom.exists());
 
         let (ancestor, first_missing) = canonicalize_best_effort_macos(&phantom);
-        assert!(first_missing.is_some(), "non-existent path should have missing component");
+        assert!(
+            first_missing.is_some(),
+            "non-existent path should have missing component"
+        );
         assert_eq!(first_missing.unwrap(), "does_not_exist");
         assert_eq!(ancestor, std::fs::canonicalize(dir.path()).unwrap());
     }

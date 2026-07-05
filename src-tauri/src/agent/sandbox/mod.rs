@@ -18,6 +18,8 @@
 //! `SandboxExecutor::run()` handles the lifecycle — pipe reading,
 //! timeout, cancel, process-tree kill — identically to `LocalExecutor`.
 
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -25,7 +27,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::agent::tools::bash::{OutputHandler, ProcessExit, ProcessExecutor};
+use crate::agent::tools::bash::{OutputHandler, ProcessExecutor, ProcessExit};
 use crate::agent::types::{AgentSignal, NetworkPolicy, SandboxPolicy, ToolError};
 
 // ─── Platform modules ────────────────────────────────────────────────────────────
@@ -93,8 +95,7 @@ impl ProcessExecutor for SandboxExecutor {
         let (mut std_cmd, _seatbelt_guard) =
             platform::build_sandboxed_command(command, cwd, &self.policy)?;
         #[cfg(not(target_os = "macos"))]
-        let mut std_cmd =
-            platform::build_sandboxed_command(command, cwd, &self.policy)?;
+        let mut std_cmd = platform::build_sandboxed_command(command, cwd, &self.policy)?;
 
         // ── Process group (for tree kill) ──
         #[cfg(unix)]
@@ -110,7 +111,7 @@ impl ProcessExecutor for SandboxExecutor {
 
         let mut child = tokio::process::Command::from(std_cmd)
             .spawn()
-            .map_err(|e| ToolError::Io(e))?;
+            .map_err(ToolError::Io)?;
 
         let pid = child.id().expect("child must have a PID");
 
@@ -123,8 +124,7 @@ impl ProcessExecutor for SandboxExecutor {
         let child_stderr = child.stderr.take().expect("stderr piped");
 
         // ── Channel from reader tasks → main loop ──
-        let (chunk_tx, mut chunk_rx) =
-            tokio::sync::mpsc::unbounded_channel::<PipeChunk>();
+        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<PipeChunk>();
         let reader_done = Arc::new(AtomicBool::new(false));
 
         spawn_pipe_reader(
@@ -375,8 +375,7 @@ mod tests {
         let policy = make_policy(vec![ws.to_path_buf()], vec![]);
         let executor = SandboxExecutor::new(ws.to_path_buf(), policy);
 
-        let (out, _err, exit) =
-            run_sync(&executor, "cat existing.txt", ws, None).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat existing.txt", ws, None).unwrap();
         assert_eq!(exit, ProcessExit::Code(0));
         assert!(out.contains("pre-existing"), "got: {}", out);
     }
@@ -390,10 +389,7 @@ mod tests {
         let protected_dir = ws.join("secrets");
         std::fs::create_dir_all(&protected_dir).unwrap();
 
-        let policy = make_policy(
-            vec![ws.to_path_buf()],
-            vec![PathBuf::from("secrets")],
-        );
+        let policy = make_policy(vec![ws.to_path_buf()], vec![PathBuf::from("secrets")]);
         let executor = SandboxExecutor::new(ws.to_path_buf(), policy);
 
         let cmd = "echo 'pwned' > secrets/passwd";
@@ -416,14 +412,10 @@ mod tests {
         std::fs::create_dir_all(&protected_dir).unwrap();
         std::fs::write(protected_dir.join("readme.txt"), "for-your-eyes-only\n").unwrap();
 
-        let policy = make_policy(
-            vec![ws.to_path_buf()],
-            vec![PathBuf::from("secrets")],
-        );
+        let policy = make_policy(vec![ws.to_path_buf()], vec![PathBuf::from("secrets")]);
         let executor = SandboxExecutor::new(ws.to_path_buf(), policy);
 
-        let (out, _err, exit) =
-            run_sync(&executor, "cat secrets/readme.txt", ws, None).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat secrets/readme.txt", ws, None).unwrap();
 
         // With mount-level masking (--tmpfs on protected directories), the
         // directory appears empty — reading any file inside it must fail.
@@ -452,7 +444,11 @@ mod tests {
 
         // When network is isolated, the connection should fail (BLOCKED).
         // We accept either exit code since the outer `true` masks it.
-        assert!(!_out.contains("CONNECTED"), "network should be isolated, got: {}", _out);
+        assert!(
+            !_out.contains("CONNECTED"),
+            "network should be isolated, got: {}",
+            _out
+        );
     }
 
     // ── 7. timeout still works inside sandbox ───────────────────────────────
@@ -465,8 +461,11 @@ mod tests {
         let executor = SandboxExecutor::new(ws.to_path_buf(), policy);
 
         let result = run_sync(&executor, "sleep 60", ws, Some(500));
-        assert!(matches!(result, Ok((_, _, ProcessExit::KilledByTimeout))),
-            "got {:?}", result);
+        assert!(
+            matches!(result, Ok((_, _, ProcessExit::KilledByTimeout))),
+            "got {:?}",
+            result
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -485,13 +484,21 @@ mod tests {
     /// tmpfs or /dev/null bind-mount may return exit=0 because the write
     /// "succeeds" within the masked filesystem — but the real file on disk
     /// must remain untouched.  This checker validates the real file content.
-    fn assert_write_blocked(exit: &ProcessExit, target_path: &Path, marker: &str, attack_name: &str) {
+    fn assert_write_blocked(
+        exit: &ProcessExit,
+        target_path: &Path,
+        marker: &str,
+        attack_name: &str,
+    ) {
         let content = std::fs::read_to_string(target_path).unwrap_or_default();
         let breached = content.contains(marker);
         assert!(
             !breached,
             "BREACH [{}]: write escaped sandbox! exit={:?}, file={}, contains_marker={}",
-            attack_name, exit, target_path.display(), content.contains(marker),
+            attack_name,
+            exit,
+            target_path.display(),
+            content.contains(marker),
         );
     }
 
@@ -501,7 +508,9 @@ mod tests {
         assert!(
             !breached,
             "BREACH [{}]: read escaped sandbox! exit={:?}, stdout_contains_marker={}",
-            attack_name, exit, stdout.contains(marker),
+            attack_name,
+            exit,
+            stdout.contains(marker),
         );
     }
 
@@ -523,9 +532,8 @@ mod tests {
         let policy = make_policy(vec![ws.clone()], vec![]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (_out, _err, exit) = run_sync(
-            &executor, "echo PWNED > ../outside_sentinel.txt", &ws, None,
-        ).unwrap();
+        let (_out, _err, exit) =
+            run_sync(&executor, "echo PWNED > ../outside_sentinel.txt", &ws, None).unwrap();
 
         assert_write_blocked(&exit, &outside, "PWNED", "write-dotdot");
     }
@@ -545,8 +553,12 @@ mod tests {
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
         let (_out, _err, exit) = run_sync(
-            &executor, "echo PWNED > ../../../deep_target.txt", &ws, None,
-        ).unwrap();
+            &executor,
+            "echo PWNED > ../../../deep_target.txt",
+            &ws,
+            None,
+        )
+        .unwrap();
 
         assert_write_blocked(&exit, &outside, "PWNED", "write-deep-dotdot");
     }
@@ -579,7 +591,8 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
 
         let marker = format!("SANDBOX_PWNED_{}", std::process::id());
-        let target = std::env::temp_dir().join(format!("sandbox_escape_{}.txt", std::process::id()));
+        let target =
+            std::env::temp_dir().join(format!("sandbox_escape_{}.txt", std::process::id()));
 
         // Ensure file doesn't exist before test
         let _ = std::fs::remove_file(&target);
@@ -617,9 +630,8 @@ mod tests {
         let policy = make_policy(vec![ws.clone()], vec![]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (_out, _err, exit) = run_sync(
-            &executor, "echo PWNED > escape_link", &ws, None,
-        ).unwrap();
+        let (_out, _err, exit) =
+            run_sync(&executor, "echo PWNED > escape_link", &ws, None).unwrap();
 
         assert_write_blocked(&exit, &outside, "PWNED", "write-symlink-outside");
     }
@@ -642,9 +654,8 @@ mod tests {
         let policy = make_policy(vec![ws.clone()], vec![]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out, _err, exit) = run_sync(
-            &executor, "cat ../secret_outside.txt", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) =
+            run_sync(&executor, "cat ../secret_outside.txt", &ws, None).unwrap();
 
         assert_read_blocked(&exit, &out, "TOP-SECRET-DATA", "read-dotdot");
     }
@@ -662,9 +673,8 @@ mod tests {
         let policy = make_policy(vec![ws.clone()], vec![]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out, _err, exit) = run_sync(
-            &executor, "cat ../../deep_secret.txt", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) =
+            run_sync(&executor, "cat ../../deep_secret.txt", &ws, None).unwrap();
 
         assert_read_blocked(&exit, &out, "CLASSIFIED-DEEP", "read-deep-dotdot");
     }
@@ -680,9 +690,7 @@ mod tests {
         let policy = make_policy(vec![ws.clone()], vec![]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out, _err, exit) = run_sync(
-            &executor, "cat /etc/passwd", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat /etc/passwd", &ws, None).unwrap();
 
         // /etc/passwd always contains "root:" on Unix systems
         assert_read_blocked(&exit, &out, "root:", "read-/etc/passwd");
@@ -700,9 +708,7 @@ mod tests {
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
         // /etc/hosts always contains "localhost" on Unix
-        let (out, _err, exit) = run_sync(
-            &executor, "cat /etc/hosts", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat /etc/hosts", &ws, None).unwrap();
 
         assert_read_blocked(&exit, &out, "localhost", "read-/etc/hosts");
     }
@@ -724,9 +730,7 @@ mod tests {
         let policy = make_policy(vec![ws.clone()], vec![]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out, _err, exit) = run_sync(
-            &executor, "cat read_escape_link", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat read_escape_link", &ws, None).unwrap();
 
         assert_read_blocked(&exit, &out, "CLASSIFIED-INFO", "read-symlink-outside");
     }
@@ -747,17 +751,18 @@ mod tests {
         std::fs::create_dir_all(&secrets).unwrap();
         std::fs::write(secrets.join("db.txt"), "ORIGINAL\n").unwrap();
 
-        let policy = make_policy(
-            vec![ws.clone()],
-            vec![PathBuf::from("secrets")],
-        );
+        let policy = make_policy(vec![ws.clone()], vec![PathBuf::from("secrets")]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (_out, _err, exit) = run_sync(
-            &executor, "echo OVERWRITE > secrets/db.txt", &ws, None,
-        ).unwrap();
+        let (_out, _err, exit) =
+            run_sync(&executor, "echo OVERWRITE > secrets/db.txt", &ws, None).unwrap();
 
-        assert_write_blocked(&exit, &secrets.join("db.txt"), "OVERWRITE", "protected-write-existing");
+        assert_write_blocked(
+            &exit,
+            &secrets.join("db.txt"),
+            "OVERWRITE",
+            "protected-write-existing",
+        );
     }
 
     /// Attack: read an existing file inside a protected path.
@@ -772,15 +777,11 @@ mod tests {
         std::fs::create_dir_all(&secrets).unwrap();
         std::fs::write(secrets.join("passwords.txt"), "admin:123456\n").unwrap();
 
-        let policy = make_policy(
-            vec![ws.clone()],
-            vec![PathBuf::from("secrets")],
-        );
+        let policy = make_policy(vec![ws.clone()], vec![PathBuf::from("secrets")]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out, _err, exit) = run_sync(
-            &executor, "cat secrets/passwords.txt", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) =
+            run_sync(&executor, "cat secrets/passwords.txt", &ws, None).unwrap();
 
         assert_read_blocked(&exit, &out, "admin:123456", "protected-read-existing");
     }
@@ -794,15 +795,16 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
 
         // "vault" doesn't exist yet, but it's in protected_paths
-        let policy = make_policy(
-            vec![ws.clone()],
-            vec![PathBuf::from("vault")],
-        );
+        let policy = make_policy(vec![ws.clone()], vec![PathBuf::from("vault")]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
         let (_out, _err, exit) = run_sync(
-            &executor, "mkdir -p vault && echo PWNED > vault/creds.txt", &ws, None,
-        ).unwrap();
+            &executor,
+            "mkdir -p vault && echo PWNED > vault/creds.txt",
+            &ws,
+            None,
+        )
+        .unwrap();
 
         let target = ws.join("vault/creds.txt");
         assert_write_blocked(&exit, &target, "PWNED", "protected-write-nonexistent");
@@ -820,18 +822,19 @@ mod tests {
         std::fs::create_dir_all(&secrets).unwrap();
         std::fs::write(secrets.join("token.txt"), "SECRET-TOKEN-ABCD\n").unwrap();
 
-        let policy = make_policy(
-            vec![ws.clone()],
-            vec![PathBuf::from("secrets")],
-        );
+        let policy = make_policy(vec![ws.clone()], vec![PathBuf::from("secrets")]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
         // Try: ./secrets/../secrets/token.txt — semantically resolves to secrets/token.txt
-        let (out, _err, exit) = run_sync(
-            &executor, "cat ./secrets/../secrets/token.txt", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) =
+            run_sync(&executor, "cat ./secrets/../secrets/token.txt", &ws, None).unwrap();
 
-        assert_read_blocked(&exit, &out, "SECRET-TOKEN-ABCD", "protected-splicing-dotdot");
+        assert_read_blocked(
+            &exit,
+            &out,
+            "SECRET-TOKEN-ABCD",
+            "protected-splicing-dotdot",
+        );
     }
 
     /// Attack: create a symlink OUTSIDE the protected_paths that points INTO
@@ -851,15 +854,10 @@ mod tests {
         let link = ws.join("shortcut_to_key");
         std::os::unix::fs::symlink("secrets/api_key.txt", &link).unwrap();
 
-        let policy = make_policy(
-            vec![ws.clone()],
-            vec![PathBuf::from("secrets")],
-        );
+        let policy = make_policy(vec![ws.clone()], vec![PathBuf::from("secrets")]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out, _err, exit) = run_sync(
-            &executor, "cat shortcut_to_key", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat shortcut_to_key", &ws, None).unwrap();
 
         assert_read_blocked(&exit, &out, "sk-1234567890abcdef", "protected-symlink-into");
     }
@@ -883,15 +881,10 @@ mod tests {
         let link1 = ws.join("link1");
         std::os::unix::fs::symlink("link2", &link1).unwrap();
 
-        let policy = make_policy(
-            vec![ws.clone()],
-            vec![PathBuf::from("secrets")],
-        );
+        let policy = make_policy(vec![ws.clone()], vec![PathBuf::from("secrets")]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out, _err, exit) = run_sync(
-            &executor, "cat link1", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat link1", &ws, None).unwrap();
 
         assert_read_blocked(&exit, &out, "CHAINED-SECRET", "protected-symlink-chain");
     }
@@ -921,19 +914,19 @@ mod tests {
         std::os::unix::fs::symlink(&real_secret, &link).unwrap();
 
         // The protected_path is the symlink itself (relative to cwd).
-        let policy = make_policy(
-            vec![ws.clone()],
-            vec![PathBuf::from(".env")],
-        );
+        let policy = make_policy(vec![ws.clone()], vec![PathBuf::from(".env")]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
         // Try reading through the symlink — should hit the mount mask on the
         // canonical target.
-        let (out, _err, exit) = run_sync(
-            &executor, "cat .env", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat .env", &ws, None).unwrap();
 
-        assert_read_blocked(&exit, &out, "OUTSIDE-API-KEY", "protected-symlink-is-outside-target");
+        assert_read_blocked(
+            &exit,
+            &out,
+            "OUTSIDE-API-KEY",
+            "protected-symlink-is-outside-target",
+        );
     }
 
     /// Attack: two different symlinks pointing to the SAME real protected
@@ -959,22 +952,15 @@ mod tests {
         std::os::unix::fs::symlink("secrets/token.txt", &link_b).unwrap();
 
         // Protect the secrets directory.
-        let policy = make_policy(
-            vec![ws.clone()],
-            vec![PathBuf::from("secrets")],
-        );
+        let policy = make_policy(vec![ws.clone()], vec![PathBuf::from("secrets")]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
         // Try link_a — must be blocked.
-        let (out_a, _err_a, exit_a) = run_sync(
-            &executor, "cat shortcut_a", &ws, None,
-        ).unwrap();
+        let (out_a, _err_a, exit_a) = run_sync(&executor, "cat shortcut_a", &ws, None).unwrap();
         assert_read_blocked(&exit_a, &out_a, "GH-TOKEN-12345", "dual-symlink-link-a");
 
         // Try link_b — must also be blocked (same real target).
-        let (out_b, _err_b, exit_b) = run_sync(
-            &executor, "cat shortcut_b", &ws, None,
-        ).unwrap();
+        let (out_b, _err_b, exit_b) = run_sync(&executor, "cat shortcut_b", &ws, None).unwrap();
         assert_read_blocked(&exit_b, &out_b, "GH-TOKEN-12345", "dual-symlink-link-b");
     }
 
@@ -999,7 +985,8 @@ mod tests {
 
         assert!(
             !out.contains("CONNECTED"),
-            "BREACH [network-tcp]: TCP connection succeeded in Isolated mode! stdout={}", out
+            "BREACH [network-tcp]: TCP connection succeeded in Isolated mode! stdout={}",
+            out
         );
     }
 
@@ -1019,7 +1006,8 @@ mod tests {
 
         assert!(
             !out.contains("has address") && !out.contains("has IPv6"),
-            "BREACH [network-dns-host]: DNS resolution succeeded in Isolated mode! stdout={}", out
+            "BREACH [network-dns-host]: DNS resolution succeeded in Isolated mode! stdout={}",
+            out
         );
     }
 
@@ -1038,8 +1026,15 @@ mod tests {
 
         // nslookup on success prints "Name:" and "Address:"
         assert!(
-            !out.contains("Address:") || out.contains("server can't find") || out.contains("NXDOMAIN") || out.contains("timed out") || out.contains("connection timed out") || out.contains("SERVFAIL") || out.contains("REFUSED"),
-            "BREACH [network-dns-nslookup]: DNS resolution succeeded in Isolated mode! stdout={}", out
+            !out.contains("Address:")
+                || out.contains("server can't find")
+                || out.contains("NXDOMAIN")
+                || out.contains("timed out")
+                || out.contains("connection timed out")
+                || out.contains("SERVFAIL")
+                || out.contains("REFUSED"),
+            "BREACH [network-dns-nslookup]: DNS resolution succeeded in Isolated mode! stdout={}",
+            out
         );
     }
 
@@ -1058,7 +1053,8 @@ mod tests {
 
         assert!(
             !out.contains("<html") && !out.contains("Example Domain"),
-            "BREACH [network-curl]: HTTP request succeeded in Isolated mode! stdout={}", out
+            "BREACH [network-curl]: HTTP request succeeded in Isolated mode! stdout={}",
+            out
         );
     }
 
@@ -1078,7 +1074,8 @@ mod tests {
 
         assert!(
             !out.contains("<html") && !out.contains("Example Domain"),
-            "BREACH [network-wget]: HTTP request via wget succeeded in Isolated mode! stdout={}", out
+            "BREACH [network-wget]: HTTP request via wget succeeded in Isolated mode! stdout={}",
+            out
         );
     }
 
@@ -1098,7 +1095,8 @@ mod tests {
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
         // Spawn 30 background sleep processes, count them, then wait
-        let cmd = "for i in $(seq 1 30); do sleep 30 & done; jobs -p | wc -l > proc_count.txt; wait";
+        let cmd =
+            "for i in $(seq 1 30); do sleep 30 & done; jobs -p | wc -l > proc_count.txt; wait";
         let (_out, _err, exit) = run_sync(&executor, cmd, &ws, Some(15000)).unwrap();
 
         let count_file = ws.join("proc_count.txt");
@@ -1114,7 +1112,8 @@ mod tests {
         // Key assertion: sandbox didn't crash or hang forever
         assert!(
             exit == ProcessExit::Code(0) || exit == ProcessExit::KilledByTimeout,
-            "Sandbox crashed on subprocess test: {:?}", exit
+            "Sandbox crashed on subprocess test: {:?}",
+            exit
         );
     }
 
@@ -1142,13 +1141,13 @@ echo FORK_DONE
         let script_path = ws.join("fork_bomb.sh");
         std::fs::write(&script_path, script).unwrap();
 
-        let (_out, _err, exit) = run_sync(
-            &executor, "bash fork_bomb.sh", &ws, Some(20000),
-        ).unwrap();
+        let (_out, _err, exit) =
+            run_sync(&executor, "bash fork_bomb.sh", &ws, Some(20000)).unwrap();
 
         assert!(
             exit == ProcessExit::Code(0) || exit == ProcessExit::KilledByTimeout,
-            "Sandbox crashed on fork bomb test: {:?}", exit
+            "Sandbox crashed on fork bomb test: {:?}",
+            exit
         );
     }
 
@@ -1193,7 +1192,10 @@ echo FORK_DONE
         // If we can read /proc/1/cmdline and it shows host's init, that's a leak.
         // Host init contains "init" or "systemd" — but bwrap init shows "bwrap".
         if exit == ProcessExit::Code(0) {
-            let is_host_like = out.contains("systemd") || out.contains("/sbin/init") || out.contains("init [") || out.trim().is_empty();
+            let is_host_like = out.contains("systemd")
+                || out.contains("/sbin/init")
+                || out.contains("init [")
+                || out.trim().is_empty();
             // Empty means /proc might not be mounted — not a leak, just a different config
             if !out.trim().is_empty() {
                 assert!(
@@ -1227,7 +1229,8 @@ echo FORK_DONE
         if out.contains("Name:") {
             assert!(
                 !out.contains("Name:\tsystemd"),
-                "BREACH [proc-leak]: sandbox can read host /proc! status={}", out.trim()
+                "BREACH [proc-leak]: sandbox can read host /proc! status={}",
+                out.trim()
             );
         }
     }
@@ -1362,11 +1365,7 @@ echo FORK_DONE
         // Create a symlink in %USERPROFILE% pointing INTO the workspace.
         let profile = std::env::var("USERPROFILE").unwrap();
         let link = std::path::PathBuf::from(&profile).join("backdoor_link");
-        let link_cmd = format!(
-            "mklink \"{}\" \"{}\"",
-            link.display(),
-            ws_secret.display()
-        );
+        let link_cmd = format!("mklink \"{}\" \"{}\"", link.display(), ws_secret.display());
         std::process::Command::new("cmd")
             .args(&["/c", &link_cmd])
             .output()
@@ -1455,8 +1454,10 @@ echo FORK_DONE
 
         let _ = std::fs::remove_file(&target);
         assert_ne!(
-            exit, ProcessExit::Code(0),
-            "BREACH [macos-write-tmp]: write to /tmp succeeded! marker={}", marker
+            exit,
+            ProcessExit::Code(0),
+            "BREACH [macos-write-tmp]: write to /tmp succeeded! marker={}",
+            marker
         );
     }
 
@@ -1471,9 +1472,7 @@ echo FORK_DONE
         let policy = make_policy(vec![ws.clone()], vec![]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out, _err, exit) = run_sync(
-            &executor, "cat /etc/passwd", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat /etc/passwd", &ws, None).unwrap();
 
         assert_read_blocked(&exit, &out, "root:", "macos-read-/etc/passwd");
     }
@@ -1494,7 +1493,8 @@ echo FORK_DONE
 
         assert!(
             !out.contains("<html") && !out.contains("Example Domain"),
-            "BREACH [macos-network-curl]: HTTP request succeeded in Isolated mode! stdout={}", out
+            "BREACH [macos-network-curl]: HTTP request succeeded in Isolated mode! stdout={}",
+            out
         );
     }
 
@@ -1517,11 +1517,14 @@ echo FORK_DONE
         let policy = make_policy(vec![ws.clone()], vec![]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out, _err, exit) = run_sync(
-            &executor, "cat outside_link", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat outside_link", &ws, None).unwrap();
 
-        assert_read_blocked(&exit, &out, "MACOS-SECRET-DATA", "macos-symlink-outside-read");
+        assert_read_blocked(
+            &exit,
+            &out,
+            "MACOS-SECRET-DATA",
+            "macos-symlink-outside-read",
+        );
     }
 
     /// macOS: protected_path is a symlink pointing outside writable_roots.
@@ -1540,17 +1543,17 @@ echo FORK_DONE
         let link = ws.join("config");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        let policy = make_policy(
-            vec![ws.clone()],
-            vec![PathBuf::from("config")],
-        );
+        let policy = make_policy(vec![ws.clone()], vec![PathBuf::from("config")]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out, _err, exit) = run_sync(
-            &executor, "cat config", &ws, None,
-        ).unwrap();
+        let (out, _err, exit) = run_sync(&executor, "cat config", &ws, None).unwrap();
 
-        assert_read_blocked(&exit, &out, "TOP-SECRET-CONFIG", "macos-protected-symlink-is-outside");
+        assert_read_blocked(
+            &exit,
+            &out,
+            "TOP-SECRET-CONFIG",
+            "macos-protected-symlink-is-outside",
+        );
     }
 
     /// macOS: two different symlinks → same protected location.  Both must
@@ -1571,21 +1574,24 @@ echo FORK_DONE
         let link_b = ws.join("key_b");
         std::os::unix::fs::symlink("private/key.pem", &link_b).unwrap();
 
-        let policy = make_policy(
-            vec![ws.clone()],
-            vec![PathBuf::from("private")],
-        );
+        let policy = make_policy(vec![ws.clone()], vec![PathBuf::from("private")]);
         let executor = SandboxExecutor::new(ws.clone(), policy);
 
-        let (out_a, _err_a, exit_a) = run_sync(
-            &executor, "cat key_a", &ws, None,
-        ).unwrap();
-        assert_read_blocked(&exit_a, &out_a, "BEGIN RSA PRIVATE KEY", "macos-dual-symlink-a");
+        let (out_a, _err_a, exit_a) = run_sync(&executor, "cat key_a", &ws, None).unwrap();
+        assert_read_blocked(
+            &exit_a,
+            &out_a,
+            "BEGIN RSA PRIVATE KEY",
+            "macos-dual-symlink-a",
+        );
 
-        let (out_b, _err_b, exit_b) = run_sync(
-            &executor, "cat key_b", &ws, None,
-        ).unwrap();
-        assert_read_blocked(&exit_b, &out_b, "BEGIN RSA PRIVATE KEY", "macos-dual-symlink-b");
+        let (out_b, _err_b, exit_b) = run_sync(&executor, "cat key_b", &ws, None).unwrap();
+        assert_read_blocked(
+            &exit_b,
+            &out_b,
+            "BEGIN RSA PRIVATE KEY",
+            "macos-dual-symlink-b",
+        );
     }
 
     // ── ProxyOnly rejection (non-macOS) ─────────────────────────────────────

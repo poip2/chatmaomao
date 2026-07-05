@@ -104,7 +104,9 @@ fn boundary_case_1_path_does_not_exist() {
     assert!(!phantom.exists());
 
     let tools_out = cb_tools(&phantom).unwrap();
-    let expected_tools = fs::canonicalize(dir.path()).unwrap().join("missing_file.txt");
+    let expected_tools = fs::canonicalize(dir.path())
+        .unwrap()
+        .join("missing_file.txt");
     assert_eq!(tools_out, expected_tools);
 
     let (anc, miss, masked) = linux_masked_path(&phantom);
@@ -124,7 +126,11 @@ fn boundary_case_2_multi_level_nonexistent() {
     assert!(!phantom.exists());
 
     let tools_out = cb_tools(&phantom).unwrap();
-    let expected_tools = fs::canonicalize(dir.path()).unwrap().join("a").join("b").join("c");
+    let expected_tools = fs::canonicalize(dir.path())
+        .unwrap()
+        .join("a")
+        .join("b")
+        .join("c");
     assert_eq!(tools_out, expected_tools);
 
     let (anc, miss, masked) = linux_masked_path(&phantom);
@@ -137,9 +143,19 @@ fn boundary_case_2_multi_level_nonexistent() {
 
     println!("✓ Case 2 (multi-level nonexistent: a/b/c):");
     println!("  tools → {}", tools_out.display());
-    println!("  linux → {}/{} (first missing component only)", anc.display(), miss);
-    println!("  NOTE: Different by design — linux masks {}/a (blocks subtree creation),", anc.display());
-    println!("  tools rebuilds full {}/a/b/c for containment checking.", anc.display());
+    println!(
+        "  linux → {}/{} (first missing component only)",
+        anc.display(),
+        miss
+    );
+    println!(
+        "  NOTE: Different by design — linux masks {}/a (blocks subtree creation),",
+        anc.display()
+    );
+    println!(
+        "  tools rebuilds full {}/a/b/c for containment checking.",
+        anc.display()
+    );
 }
 
 #[test]
@@ -204,7 +220,9 @@ fn boundary_case_5_symlink_in_path() {
     assert!(!phantom.exists());
 
     let tools_out = cb_tools(&phantom).unwrap();
-    let expected = fs::canonicalize(&real_dir).unwrap().join("missing_file.txt");
+    let expected = fs::canonicalize(&real_dir)
+        .unwrap()
+        .join("missing_file.txt");
     assert_eq!(tools_out, expected);
 
     let (anc, miss, masked) = linux_masked_path(&phantom);
@@ -214,7 +232,11 @@ fn boundary_case_5_symlink_in_path() {
 
     println!("✓ Case 5 (symlink in path):");
     println!("  tools → {}", tools_out.display());
-    println!("  linux → {}/{} (symlink resolved to real_dir)", anc.display(), miss);
+    println!(
+        "  linux → {}/{} (symlink resolved to real_dir)",
+        anc.display(),
+        miss
+    );
 }
 
 // ─── Summary ────────────────────────────────────────────────────────────────

@@ -33,6 +33,8 @@
 //! kernel mount layer, it cannot be bypassed by symlink tricks, `..`
 //! path-splicing, or any other purely string-based path manipulation.
 
+#![allow(dead_code)]
+
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -70,8 +72,7 @@ pub fn build_sandboxed_command(
     }
 
     // Canonicalize cwd so bwrap bind-mounts use real paths.
-    let cwd_canon = std::fs::canonicalize(cwd)
-        .map_err(|e| ToolError::Io(e))?;
+    let cwd_canon = std::fs::canonicalize(cwd).map_err(ToolError::Io)?;
 
     if bwrap_available() {
         build_bwrap_command(command, &cwd_canon, policy)
@@ -116,7 +117,9 @@ fn build_bwrap_command(
     // ── Selective /etc bind-mounts ──
     // Only bind the specific /etc files required for the command to work.
     // Add new files here only if a test proves they are essential.
-    if matches!(policy.network, NetworkPolicy::FullAccess) || matches!(policy.network, NetworkPolicy::ProxyOnly) {
+    if matches!(policy.network, NetworkPolicy::FullAccess)
+        || matches!(policy.network, NetworkPolicy::ProxyOnly)
+    {
         // DNS resolution — only needed when network is not isolated.
         if Path::new("/etc/resolv.conf").exists() {
             cmd.arg("--ro-bind")
@@ -141,7 +144,9 @@ fn build_bwrap_command(
         SandboxMode::ReadOnly => {
             // Bind cwd as read-only so the command can read files from the
             // workspace but cannot write.
-            cmd.arg("--ro-bind").arg(cwd_str.as_ref()).arg(cwd_str.as_ref());
+            cmd.arg("--ro-bind")
+                .arg(cwd_str.as_ref())
+                .arg(cwd_str.as_ref());
         }
         SandboxMode::WorkspaceWrite => {
             // Bind every writable_root as read-write.
@@ -154,7 +159,9 @@ fn build_bwrap_command(
             }
             // Always make cwd visible even if not explicitly in writable_roots.
             if !is_root_or_parent_in_list(cwd_canon, &policy.writable_roots) {
-                cmd.arg("--bind").arg(cwd_str.as_ref()).arg(cwd_str.as_ref());
+                cmd.arg("--bind")
+                    .arg(cwd_str.as_ref())
+                    .arg(cwd_str.as_ref());
             }
         }
         SandboxMode::DangerFullAccess => unreachable!(),
@@ -251,8 +258,8 @@ fn apply_landlock_rules(
     is_isolated: bool,
 ) -> std::io::Result<()> {
     use landlock::{
-        ABI, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
-        RulesetAttr, RulesetCreatedAttr,
+        AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        RulesetCreatedAttr, ABI,
     };
 
     let abi = ABI::V1;
@@ -297,7 +304,10 @@ fn apply_landlock_rules(
     if !is_read_only {
         for root in writable_roots {
             // Skip roots that are covered by protected_paths.
-            if protected_paths.iter().any(|p| root.starts_with(p) || root == p) {
+            if protected_paths
+                .iter()
+                .any(|p| root.starts_with(p) || root == p)
+            {
                 continue;
             }
             if let Ok(fd) = PathFd::new(root) {
@@ -375,9 +385,7 @@ fn mask_protected_path(
     // a device node-like file — creating a directory at this path will
     // fail with "Not a directory", and reads will return empty content.
     let mask_str = mask_target.to_string_lossy();
-    cmd.arg("--ro-bind")
-        .arg("/dev/null")
-        .arg(mask_str.as_ref());
+    cmd.arg("--ro-bind").arg("/dev/null").arg(mask_str.as_ref());
 
     Ok(())
 }
@@ -455,10 +463,21 @@ mod tests {
         let cmd = build_bwrap_command("echo hi", ws, &policy).unwrap();
         // Program should be bwrap.
         assert_eq!(cmd.get_program(), "bwrap");
-        let args: Vec<_> = cmd.get_args().map(|s| s.to_string_lossy().to_string()).collect();
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
         let arg_str = args.join(" ");
-        assert!(arg_str.contains("--unshare-net"), "missing --unshare-net: {}", arg_str);
-        assert!(arg_str.contains("--ro-bind"), "missing --ro-bind: {}", arg_str);
+        assert!(
+            arg_str.contains("--unshare-net"),
+            "missing --unshare-net: {}",
+            arg_str
+        );
+        assert!(
+            arg_str.contains("--ro-bind"),
+            "missing --ro-bind: {}",
+            arg_str
+        );
     }
 
     #[test]
@@ -476,7 +495,10 @@ mod tests {
         };
 
         let cmd = build_bwrap_command("echo hi", ws, &policy).unwrap();
-        let args: Vec<_> = cmd.get_args().map(|s| s.to_string_lossy().to_string()).collect();
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
         let arg_str = args.join(" ");
         assert!(arg_str.contains("--bind"), "missing --bind: {}", arg_str);
     }
@@ -496,7 +518,10 @@ mod tests {
         };
 
         let cmd = build_bwrap_command("echo hi", ws, &policy).unwrap();
-        let args: Vec<_> = cmd.get_args().map(|s| s.to_string_lossy().to_string()).collect();
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
 
         // Protected --tmpfs for .git (directory) must appear AFTER the --bind
         // for the workspace.  This ensures "whole writable, local tightened" order.
@@ -520,11 +545,20 @@ mod tests {
         let mut cmd = std::process::Command::new("bwrap");
         mask_protected_path(&mut cmd, &phantom, ws).unwrap();
 
-        let args: Vec<_> = cmd.get_args().map(|s| s.to_string_lossy().to_string()).collect();
-        assert!(args.contains(&"--ro-bind".to_string()), "should emit --ro-bind for non-existent path");
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            args.contains(&"--ro-bind".to_string()),
+            "should emit --ro-bind for non-existent path"
+        );
         // Should bind /dev/null on the phantom path
         let devnull_pos = args.iter().position(|a| a == "/dev/null");
-        assert!(devnull_pos.is_some(), "should use /dev/null as source for non-existent path");
+        assert!(
+            devnull_pos.is_some(),
+            "should use /dev/null as source for non-existent path"
+        );
     }
 
     #[test]
@@ -537,10 +571,19 @@ mod tests {
         let mut cmd = std::process::Command::new("bwrap");
         mask_protected_path(&mut cmd, &file, ws).unwrap();
 
-        let args: Vec<_> = cmd.get_args().map(|s| s.to_string_lossy().to_string()).collect();
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
         // Should use --ro-bind /dev/null (not --tmpfs) for a file.
-        assert!(args.contains(&"--ro-bind".to_string()), "file mask should use --ro-bind");
-        assert!(!args.contains(&"--tmpfs".to_string()), "file mask should NOT use --tmpfs");
+        assert!(
+            args.contains(&"--ro-bind".to_string()),
+            "file mask should use --ro-bind"
+        );
+        assert!(
+            !args.contains(&"--tmpfs".to_string()),
+            "file mask should NOT use --tmpfs"
+        );
     }
 
     #[test]
@@ -553,10 +596,19 @@ mod tests {
         let mut cmd = std::process::Command::new("bwrap");
         mask_protected_path(&mut cmd, &subdir, ws).unwrap();
 
-        let args: Vec<_> = cmd.get_args().map(|s| s.to_string_lossy().to_string()).collect();
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
         // Should use --tmpfs (not --ro-bind) for a directory.
-        assert!(args.contains(&"--tmpfs".to_string()), "dir mask should use --tmpfs");
-        assert!(!args.contains(&"--ro-bind".to_string()), "dir mask should NOT use --ro-bind");
+        assert!(
+            args.contains(&"--tmpfs".to_string()),
+            "dir mask should use --tmpfs"
+        );
+        assert!(
+            !args.contains(&"--ro-bind".to_string()),
+            "dir mask should NOT use --ro-bind"
+        );
     }
 
     #[test]
@@ -577,7 +629,10 @@ mod tests {
         let mut cmd = std::process::Command::new("bwrap");
         mask_protected_path(&mut cmd, &link, ws).unwrap();
 
-        let args: Vec<_> = cmd.get_args().map(|s| s.to_string_lossy().to_string()).collect();
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
         let arg_str = args.join(" ");
 
         // The mask should target the REAL canonical path, not the symlink path.
