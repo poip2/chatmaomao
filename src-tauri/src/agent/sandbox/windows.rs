@@ -55,7 +55,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::agent::types::{NetworkPolicy, SandboxMode, SandboxPolicy, ToolError};
+use crate::agent::types::{SandboxMode, SandboxPolicy, ToolError};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, LocalFree, FALSE, HANDLE, HLOCAL};
@@ -679,6 +679,7 @@ struct AceCopy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::types::NetworkPolicy;
 
     #[test]
     fn test_build_sandboxed_command_danger_full_access() {
@@ -731,7 +732,7 @@ mod tests {
         assert_eq!(ace.ace_type, ACCESS_DENIED_ACE_TYPE);
 
         // ACE_HEADER
-        assert_eq!(ace.ace_bytes[0], ACCESS_DENIED_ACE_TYPE);
+        assert_eq!(ace.ace_bytes[0], ACCESS_DENIED_ACE_TYPE as u8);
         // Flags: CONTAINER_INHERIT_ACE(2) | OBJECT_INHERIT_ACE(1) = 3
         assert_eq!(ace.ace_bytes[1], 3);
         // Size: 8 + 12 = 20
@@ -757,7 +758,7 @@ mod tests {
         let ace = build_read_ace(&sid, false);
 
         assert_eq!(ace.ace_type, ACCESS_ALLOWED_ACE_TYPE);
-        assert_eq!(ace.ace_bytes[0], ACCESS_ALLOWED_ACE_TYPE);
+        assert_eq!(ace.ace_bytes[0], ACCESS_ALLOWED_ACE_TYPE as u8);
         assert_eq!(ace.ace_bytes[1], 3); // CI | OI
         assert_eq!(&ace.ace_bytes[8..], &sid[..]);
     }
@@ -915,7 +916,6 @@ mod tests {
 
     use crate::agent::tools::bash::OutputHandler;
     use crate::agent::tools::bash::ProcessExit;
-    use crate::agent::types::AgentSignal;
     use std::sync::{Arc, Mutex};
 
     fn run_sandboxed_cmd(
